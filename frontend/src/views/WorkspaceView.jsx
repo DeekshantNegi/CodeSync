@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 
@@ -19,13 +19,22 @@ import {
 } from "lucide-react";
 
 import Whiteboard from "../components/whiteboard/whiteboard";
+import VoiceBar from "../components/collaboration/VoiceBar";
+import { useSocketContext } from "../contexts/SocketContext";
 
 export default function WorkspaceView() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { socket } = useSocketContext();
 
   const displayName = location.state?.displayName || "Developer";
+
+  useEffect(() => {
+    if (socket && !socket.connected) {
+      socket.connect();
+    }
+  }, [socket]);
 
   // General state
   const [activeTab, setActiveTab] = useState("chat");
@@ -473,6 +482,8 @@ export default function WorkspaceView() {
 
         {/* Chat Sidebar */}
         <aside className="flex w-72 shrink-0 flex-col border-l border-[#2a2f40] bg-[#12151e]">
+          <VoiceBar roomId={roomId} socket={socket} />
+
           <div className="flex border-b border-[#2a2f40]">
             <button
               onClick={() => setActiveTab("chat")}

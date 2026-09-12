@@ -1,51 +1,195 @@
-import { useEffect, useRef, useState } from 'react';
-import Peer from 'simple-peer';
+import { useCallback, useEffect, useRef, useState } from "react";
+import Peer from "simple-peer";
 
-export function useWebRTC(roomId, socket) {
+function getPeerId(payload) {
+  return payload?.peerId || payload?.callerId || payload?.userId || payload?.from;
+}
+
+export function useWebRTC(roomId, socket, enabled = true) {
   const [isMuted, setIsMuted] = useState(false);
-  const [isVoiceConnected, setIsVoiceConnected] = useState(false);
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+  const [remoteStreams, setRemoteStreams] = useState([]);
+  const [retryToken, setRetryToken] = useState(0);
   const localStreamRef = useRef(null);
-  const peersRef = useRef({});
+  const peersRef = useRef(new Map());
+
+  const removePeer = useCallback((peerId) => {
+    const peer = peersRef.current.get(peerId);
+
+    if (peer) {
+      peer.destroy();
+      peersRef.current.delete(peerId);
+    }
+
+    setRemoteStreams((streams) => streams.filter((stream) => stream.peerId !== peerId));
+  }, []);
+
+  const createPeer = useCallback(
+    (peerId, stream, initiator) => {
+      if (!peerId || peersRef.current.has(peerId)) return;
+
+      const peer = new Peer({
+        initiator,
+        trickle: false,
+        stream,
+        objectMode: false,
+      });
+
+      peer.on("signal", (signal) => {
+        socket.emit("voice-signal", {
+          roomId,
+          to: peerId,
+          callerId: socket.id,
+          signal,
+        });
+      });
+
+      peer.on("stream", (remoteStream) => {
+        setRemoteStreams((streams) => {
+          const withoutPeer = streams.filter((item) => item.peerId !== peerId);
+          return [...withoutPeer, { peerId, stream: remoteStream }];
+        });
+      });
+
+      peer.on("close", () => removePeer(peerId));
+      peer.on("error", () => removePeer(peerId));
+      peersRef.current.set(peerId, peer);
+    },
+    [removePeer, roomId, socket]
+  );
 
   useEffect(() => {
-    if (!roomId || !socket) return;
+    if (!roomId || !socket || !enabled) return undefined;
 
-    navigator.mediaDevices
-      .getUserMedia({ audio: true, video: false })
-      .then((stream) => {
-        localStreamRef.current = stream;
-        setIsVoiceConnected(true);
+    let disposed = false;
+    let activeStream = null;
+    const activePeers = peersRef.current;
 
-        socket.emit('join-voice', { roomId });
+    const handleVoiceUsers = ({ users = [] } = {}) => {
+      const stream = localStreamRef.current;
+      if (!stream || disposed) return;
 
-        socket.on('user-joined-voice', ({ signal, callerId }) => {
-          const peer = new Peer({ initiator: false, trickle: false, stream });
-          peer.on('signal', (signalData) => {
-            socket.emit('return-voice-signal', { signal: signalData, callerId });
-          });
-          peer.signal(signal);
-          peersRef.current[callerId] = peer;
+      users
+        .map((user) => (typeof user === "string" ? user : getPeerId(user)))
+        .filter((peerId) => peerId && peerId !== socket.id)
+        .forEach((peerId) => createPeer(peerId, stream, true));
+    };
+
+    const handleUserJoined = (payload = {}) => {
+      const peerId = getPeerId(payload);
+      const stream = localStreamRef.current;
+      if (stream && peerId && peerId !== socket.id) {
+        createPeer(peerId, stream, true);
+      }
+    };
+
+    const handleSignal = ({ from, callerId, peerId, signal } = {}) => {
+      const senderId = from || callerId || peerId;
+      if (!senderId || !signal || senderId === socket.id) return;
+
+      const peer = peersRef.current.get(senderId);
+      if (peer) {
+        peer.signal(signal);
+        return;
+      }
+
+      const stream = localStreamRef.current;
+      if (!stream) return;
+
+      createPeer(senderId, stream, false);
+      peersRef.current.get(senderId)?.signal(signal);
+    };
+
+    const handleUserLeft = (payload = {}) => {
+      const peerId = getPeerId(payload);
+      if (peerId) removePeer(peerId);
+    };
+
+    const startVoice = async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setError("This browser does not support microphone access.");
+        setStatus("error");
+        return;
+      }
+
+      try {
+        setStatus("connecting");
+        setError("");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+          video: false,
         });
-      })
-      .catch((err) => console.warn('Microphone permission denied or unsupported:', err));
+
+        if (disposed) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        activeStream = stream;
+        localStreamRef.current = stream;
+        setStatus("connected");
+        socket.emit("join-voice", { roomId });
+      } catch (mediaError) {
+        setError(
+          mediaError.name === "NotAllowedError"
+            ? "Microphone permission is blocked. Allow access in your browser settings."
+            : "Unable to access the microphone."
+        );
+        setStatus("error");
+      }
+    };
+
+    socket.on("voice-users", handleVoiceUsers);
+    socket.on("user-joined-voice", handleUserJoined);
+    socket.on("voice-signal", handleSignal);
+    socket.on("return-voice-signal", handleSignal);
+    socket.on("user-left-voice", handleUserLeft);
+    socket.on("user-disconnected-voice", handleUserLeft);
+    startVoice();
 
     return () => {
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      Object.values(peersRef.current).forEach((peer) => peer.destroy());
+      disposed = true;
+      socket.emit("leave-voice", { roomId });
+      socket.off("voice-users", handleVoiceUsers);
+      socket.off("user-joined-voice", handleUserJoined);
+      socket.off("voice-signal", handleSignal);
+      socket.off("return-voice-signal", handleSignal);
+      socket.off("user-left-voice", handleUserLeft);
+      socket.off("user-disconnected-voice", handleUserLeft);
+      activePeers.forEach((peer) => peer.destroy());
+      activePeers.clear();
+      activeStream?.getTracks().forEach((track) => track.stop());
+      setRemoteStreams([]);
+      setStatus("idle");
     };
-  }, [roomId, socket]);
+  }, [createPeer, enabled, removePeer, retryToken, roomId, socket]);
 
   const toggleMute = () => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMuted(!audioTrack.enabled);
-      }
-    }
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (!audioTrack) return;
+
+    audioTrack.enabled = !audioTrack.enabled;
+    setIsMuted(!audioTrack.enabled);
   };
 
-  return { isMuted, isVoiceConnected, toggleMute };
+  const reconnect = () => {
+    setError("");
+    setStatus("connecting");
+    setRetryToken((token) => token + 1);
+  };
+
+  return {
+    error,
+    isMuted,
+    isVoiceConnected: status === "connected",
+    reconnect,
+    remoteStreams,
+    status,
+    toggleMute,
+  };
 }
