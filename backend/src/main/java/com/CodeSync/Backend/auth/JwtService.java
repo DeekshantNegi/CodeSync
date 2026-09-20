@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
+import com.CodeSync.Backend.entity.User;
 
 @Service
 public class JwtService {
@@ -40,6 +41,20 @@ public class JwtService {
                 .signWith(signingKey)
                 .compact();
     }
+
+        public String issueUserToken(User user) {
+        Instant now = Instant.now();
+        return Jwts.builder()
+            .subject(user.getId().toString())
+            .claims(Map.of(
+                "displayName", user.getDisplayName(),
+                "email", user.getEmail()
+            ))
+            .issuedAt(Date.from(now))
+            .expiration(Date.from(now.plusMillis(expirationMs)))
+            .signWith(signingKey)
+            .compact();
+        }
 
     public Claims parse(String token) {
         return Jwts.parser()

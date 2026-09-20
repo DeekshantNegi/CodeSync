@@ -10,10 +10,23 @@ import LobbyView from "./views/LobbyView";
 import WorkspaceView from "./views/WorkspaceView";
 import HistoryView from "./views/HistoryView";
 import ProfileView from "./views/ProfileView";
+import AuthView from "./views/AuthView";
+import AppTopBar from "./components/layout/AppTopBar";
 
 import { SocketProvider } from "./contexts/SocketContext";
 import { RoomProvider } from "./contexts/RoomContext";
 import { AuthProvider } from "./contexts/AuthContext";
+import { useAuth } from "./contexts/AuthContext";
+
+function RequireAuth({ children }) {
+  const { user, isRestoring } = useAuth();
+  if (isRestoring) return <div className="flex h-screen items-center justify-center bg-[#090a0f] text-sm text-[#94a3b8]">Restoring your session...</div>;
+  return user ? children : <Navigate to="/auth?mode=signin" replace state={{ from: window.location.pathname }} />;
+}
+
+function AppShell({ children }) {
+  return <><AppTopBar />{children}</>;
+}
 
 export default function App() {
   return (
@@ -29,27 +42,25 @@ export default function App() {
             <Routes>
 
               {/* Entry Lobby */}
-              <Route
-                path="/"
-                element={<LobbyView />}
-              />
+              <Route path="/" element={<AppShell><LobbyView /></AppShell>} />
+              <Route path="/auth" element={<AuthView />} />
 
               {/* Workspace */}
               <Route
                 path="/room/:roomId"
-                element={<WorkspaceView />}
+                element={<RequireAuth><WorkspaceView /></RequireAuth>}
               />
 
               {/* History */}
               <Route
                 path="/history"
-                element={<HistoryView />}
+                element={<RequireAuth><AppShell><HistoryView /></AppShell></RequireAuth>}
               />
 
               {/* Profile */}
               <Route
                 path="/profile"
-                element={<ProfileView />}
+                element={<RequireAuth><AppShell><ProfileView /></AppShell></RequireAuth>}
               />
 
               {/* Unknown Route */}

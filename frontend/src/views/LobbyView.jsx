@@ -10,7 +10,7 @@ import httpClient from "../services/httpClient";
 
 export default function LobbyView() {
   const navigate = useNavigate();
-  const { authenticate } = useAuth();
+  const { user } = useAuth();
 
   const [displayName, setDisplayName] = useState("Alex_Dev");
   const [joinRoomId, setJoinRoomId] = useState("");
@@ -18,7 +18,10 @@ export default function LobbyView() {
   // CREATE ROOM
   const handleCreateRoom = async () => {
     try {
-      const user = await authenticate(displayName);
+      if (!user) {
+        navigate('/auth?mode=signin');
+        return;
+      }
       const { data: room } = await httpClient.post("/rooms");
 
       navigate(`/room/${room.roomCode}`, {
@@ -38,7 +41,10 @@ export default function LobbyView() {
     }
 
     try {
-      const user = await authenticate(displayName);
+      if (!user) {
+        navigate('/auth?mode=signin');
+        return;
+      }
       await httpClient.get(`/rooms/${encodeURIComponent(roomId)}`);
       navigate(`/room/${roomId}`, {
         state: { displayName: user.displayName },
@@ -219,50 +225,6 @@ export default function LobbyView() {
         </div>
 
       </main>
-
-      {/* =========================================
-          BOTTOM NAVIGATION
-      ========================================== */}
-
-      <nav className="fixed z-50 bottom-10 left-1/2 -translate-x-1/2">
-
-        <div className="flex items-center bg-black/95 border border-[#2a2f40] rounded-2xl p-1 shadow-2xl backdrop-blur-md">
-
-          {/* ENTRY LOBBY */}
-
-          <button
-            type="button"
-            onClick={() => navigate("/")}
-            className="px-5 py-3 rounded-lg bg-[#181b26] border border-[#2a2f40] text-sm font-medium text-[#f1f5f9] whitespace-nowrap transition-colors"
-          >
-            1. Entry Lobby
-          </button>
-
-          {/* WORKSPACE */}
-
-          <button
-            type="button"
-            onClick={() => navigate("/room/demo")}
-            className="px-5 py-3 rounded-lg text-sm text-[#94a3b8] hover:text-[#f1f5f9] hover:bg-[#12151e] transition-colors whitespace-nowrap"
-          >
-            2. Workspace /
-            <br />
-            Editor
-          </button>
-
-          {/* HISTORY */}
-
-          <button
-            type="button"
-            onClick={() => navigate("/history")}
-            className="px-5 py-3 rounded-lg text-sm text-[#94a3b8] hover:text-[#f1f5f9] hover:bg-[#12151e] transition-colors whitespace-nowrap"
-          >
-            3. Chat History
-          </button>
-
-        </div>
-
-      </nav>
 
     </div>
   );

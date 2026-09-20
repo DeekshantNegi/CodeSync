@@ -26,6 +26,7 @@ import VoiceBar from "../components/collaboration/VoiceBar";
 import { useSocketContext } from "../contexts/SocketContext";
 import { useAuth } from "../contexts/AuthContext";
 import { executeCode } from "../services/api";
+import httpClient from "../services/httpClient";
 
 function detectLanguage(filename) {
   const extension = filename.split(".").pop()?.toLowerCase();
@@ -63,6 +64,11 @@ export default function WorkspaceView() {
   const { user } = useAuth();
 
   const displayName = location.state?.displayName || "Developer";
+
+  useEffect(() => {
+    if (!user?.token || !roomId) return;
+    httpClient.get(`/rooms/${encodeURIComponent(roomId)}`).catch(() => navigate("/", { replace: true }));
+  }, [navigate, roomId, user?.token]);
 
   useEffect(() => {
     if (socket && !socket.connected) {

@@ -15,9 +15,11 @@ public class RoomService {
     private static final String ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     private final SecureRandom random = new SecureRandom();
     private final RoomRepository roomRepository;
+    private final RoomHistoryService roomHistoryService;
 
-    public RoomService(RoomRepository roomRepository) {
+    public RoomService(RoomRepository roomRepository, RoomHistoryService roomHistoryService) {
         this.roomRepository = roomRepository;
+        this.roomHistoryService = roomHistoryService;
     }
 
     public Room create(String hostUserId) {
@@ -25,7 +27,15 @@ public class RoomService {
         do {
             roomCode = generateCode();
         } while (roomRepository.existsByRoomCode(roomCode));
-        return roomRepository.save(new Room(roomCode, hostUserId));
+        Room room = roomRepository.save(new Room(roomCode, hostUserId));
+        roomHistoryService.record(hostUserId, room.getRoomCode(), "HOST");
+        return room;
+    }
+
+    public Room join(String roomCode, String userId) {
+        Room room = requireActive(roomCode);
+        roomHistoryService.record(userId, room.getRoomCode(), room.getHostUserId().equals(userId) ? "HOST" : "PARTICIPANT");
+        return room;
     }
 
     public Room requireActive(String roomCode) {

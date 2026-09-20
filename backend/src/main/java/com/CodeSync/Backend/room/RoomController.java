@@ -31,7 +31,7 @@ public class RoomController {
 
     @GetMapping("/{roomCode}")
     public ResponseEntity<RoomResponse> join(@PathVariable String roomCode, Authentication authentication) {
-        return ResponseEntity.ok(RoomResponse.from(roomService.requireActive(roomCode)));
+        return ResponseEntity.ok(RoomResponse.from(roomService.join(roomCode, authentication.getName())));
     }
 
     public record RoomResponse(

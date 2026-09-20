@@ -1,15 +1,13 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Download, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
+import httpClient from '../services/httpClient';
 
 export default function HistoryView() {
   const navigate = useNavigate();
 
-  const sessions = [
-    { id: 'sync-8f92a4', name: '#sync-8f92a4 (Current Session)', meta: 'Active 12m ago • 2 Participants • 18 Messages', isCurrent: true },
-    { id: 'interview-prod-fix', name: '#interview-prod-fix', meta: 'Yesterday at 4:30 PM • 4 Participants • 42 Messages', isCurrent: false },
-    { id: 'algo-practice-session', name: '#algo-practice-session', meta: 'Sep 04, 2026 • 3 Participants • 105 Messages', isCurrent: false }
-  ];
+  const [sessions, setSessions] = useState([]);
+  useEffect(() => { httpClient.get('/history').then(({ data }) => setSessions(data)).catch(() => setSessions([])); }, []);
 
   return (
     <div className="h-full w-full max-w-4xl mx-auto p-8 flex flex-col">
@@ -27,24 +25,21 @@ export default function HistoryView() {
       </div>
 
       <div className="space-y-3 flex-1 overflow-y-auto">
+        {sessions.length === 0 && <p className="text-sm text-[#64748b]">No rooms visited yet.</p>}
         {sessions.map((s) => (
-          <div key={s.id} className="bg-[#181b26] border border-[#2a2f40] p-4 rounded-xl flex items-center justify-between">
+          <div key={s.roomCode} className="bg-[#181b26] border border-[#2a2f40] p-4 rounded-xl flex items-center justify-between">
             <div>
-              <h4 className="text-sm font-semibold mb-1">{s.name}</h4>
-              <p className="text-xs text-[#94a3b8]">{s.meta}</p>
+              <h4 className="text-sm font-semibold mb-1">#{s.roomCode}</h4>
+              <p className="text-xs text-[#94a3b8]">{s.role} · {new Date(s.lastVisitedAt).toLocaleString()}</p>
             </div>
-            {s.isCurrent ? (
+            {s.roomCode ? (
               <button
-                onClick={() => navigate(`/room/${s.id}`)}
+                onClick={() => navigate(`/room/${s.roomCode}`)}
                 className="flex items-center gap-2 bg-[#3b82f6] text-white text-xs font-medium px-3.5 py-2 rounded-lg hover:bg-[#2563eb]"
               >
-                Rejoin Workspace <ExternalLink className="w-3.5 h-3.5" />
+                Rejoin <ExternalLink className="w-3.5 h-3.5" />
               </button>
-            ) : (
-              <button className="flex items-center gap-2 bg-[#1e2330] border border-[#2a2f40] text-xs font-medium px-3 py-2 rounded-lg hover:bg-[#262c3d]">
-                <Download className="w-3.5 h-3.5" /> Export Chat Log
-              </button>
-            )}
+            ) : null}
           </div>
         ))}
       </div>
