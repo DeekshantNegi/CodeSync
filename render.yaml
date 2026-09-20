@@ -39,7 +39,6 @@ services:
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
-    plan: free
     envVars:
       - key: VITE_API_URL
         value: https://codesync-backend.onrender.com/api
