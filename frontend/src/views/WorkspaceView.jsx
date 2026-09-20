@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 
@@ -12,6 +12,9 @@ import {
   Trash2,
   X,
   UserPlus,
+  UserMinus,
+  Mic,
+  MicOff,
   Terminal,
   Check,
   Pencil,
@@ -21,12 +24,43 @@ import {
 import Whiteboard from "../components/whiteboard/whiteboard";
 import VoiceBar from "../components/collaboration/VoiceBar";
 import { useSocketContext } from "../contexts/SocketContext";
+import { useAuth } from "../contexts/AuthContext";
+import { executeCode } from "../services/api";
+
+function detectLanguage(filename) {
+  const extension = filename.split(".").pop()?.toLowerCase();
+
+  switch (extension) {
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "py":
+      return "python";
+    case "java":
+      return "java";
+    case "cpp":
+    case "c":
+      return "cpp";
+    case "html":
+      return "html";
+    case "css":
+      return "css";
+    case "json":
+      return "json";
+    default:
+      return "plaintext";
+  }
+}
 
 export default function WorkspaceView() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { socket } = useSocketContext();
+  const { user } = useAuth();
 
   const displayName = location.state?.displayName || "Developer";
 
@@ -39,6 +73,10 @@ export default function WorkspaceView() {
   // General state
   const [activeTab, setActiveTab] = useState("chat");
   const [activeWorkspace, setActiveWorkspace] = useState("code");
+  const [participants, setParticipants] = useState([]);
+  const [hostId, setHostId] = useState(null);
+  const [roomReady, setRoomReady] = useState(false);
+  const [participantMutes, setParticipantMutes] = useState({});
 
   const [inputMsg, setInputMsg] = useState("");
   const [messages, setMessages] = useState([]);
@@ -69,45 +107,166 @@ export default function WorkspaceView() {
   ]);
 
   const [activeFileName, setActiveFileName] = useState("main.py");
+  const filesRef = useRef(files);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
 
   const activeFile =
     files.find((file) => file.name === activeFileName) || files[0];
 
-  const detectLanguage = (filename) => {
-    const extension = filename.split(".").pop()?.toLowerCase();
+  useEffect(() => {
+    if (!socket || !roomId) return undefined;
 
-    switch (extension) {
-      case "js":
-      case "jsx":
-        return "javascript";
+    const joinRoom = () => {
+      if (!user?.token) return;
+      setRoomReady(false);
+      socket.emit("join-room", {
+        roomId,
+        displayName,
+        token: user.token,
+      });
+    };
 
-      case "ts":
-      case "tsx":
-        return "typescript";
+    const handleRoomState = ({ participantId, participants: nextParticipants, hostId: nextHostId, files: nextFiles, messages: nextMessages }) => {
+      socket.id = participantId;
+      setParticipants(nextParticipants || []);
+      setHostId(nextHostId || null);
+      setMessages(nextMessages || []);
+      setParticipantMutes(
+        Object.fromEntries(
+          (nextParticipants || []).map((participant) => [
+            participant.id,
+            participant.id !== nextHostId,
+          ])
+        )
+      );
 
-      case "py":
-        return "python";
+      if (nextFiles && Object.keys(nextFiles).length > 0) {
+        setFiles((currentFiles) =>
+          Object.entries(nextFiles).map(([name, content]) => {
+            const current = currentFiles.find((file) => file.name === name);
+            return {
+              name,
+              language: current?.language || detectLanguage(name),
+              content: content?.content || content || "",
+            };
+          })
+        );
+      }
 
-      case "java":
-        return "java";
+      if (nextHostId === participantId) {
+        filesRef.current.forEach((file) => {
+          socket.emit("code-change", { fileName: file.name, content: file.content });
+        });
+      }
+    };
 
-      case "cpp":
-      case "c":
-        return "cpp";
+    const handleRoomJoined = () => setRoomReady(true);
+    const handleDisconnect = () => setRoomReady(false);
 
-      case "html":
-        return "html";
+    const handleCodeChange = ({ fileName, content }) => {
+      if (!fileName || content === undefined) return;
+      setFiles((currentFiles) => {
+        const hasFile = currentFiles.some((file) => file.name === fileName);
+        if (hasFile) {
+          return currentFiles.map((file) =>
+            file.name === fileName ? { ...file, content } : file
+          );
+        }
 
-      case "css":
-        return "css";
+        return [
+          ...currentFiles,
+          { name: fileName, language: detectLanguage(fileName), content },
+        ];
+      });
+    };
 
-      case "json":
-        return "json";
+    const handleFileDelete = ({ fileName }) => {
+      if (!fileName) return;
+      setFiles((currentFiles) => {
+        const remainingFiles = currentFiles.filter((file) => file.name !== fileName);
 
-      default:
-        return "plaintext";
-    }
-  };
+        if (activeFileName === fileName && remainingFiles.length > 0) {
+          setActiveFileName(remainingFiles[0].name);
+        }
+
+        return remainingFiles;
+      });
+    };
+
+    const handleParticipantJoined = ({ participantId, displayName: joinedName, isHost }) => {
+      setParticipants((currentParticipants) => {
+        if (currentParticipants.some((participant) => participant.id === participantId)) {
+          return currentParticipants;
+        }
+
+        return [
+          ...currentParticipants,
+          { id: participantId, name: joinedName, isHost },
+        ];
+      });
+      setParticipantMutes((currentMutes) => ({
+        ...currentMutes,
+        [participantId]: !isHost,
+      }));
+    };
+
+    const handleParticipantLeft = ({ participantId }) => {
+      setParticipants((currentParticipants) =>
+        currentParticipants.filter((participant) => participant.id !== participantId)
+      );
+      setParticipantMutes((currentMutes) => {
+        const nextMutes = { ...currentMutes };
+        delete nextMutes[participantId];
+        return nextMutes;
+      });
+    };
+
+    const handleHostChanged = ({ participantId }) => setHostId(participantId);
+
+    const handleChatMessage = ({ displayName: author, text, time }) => {
+      if (!text) return;
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          author: author || "Participant",
+          text,
+          time: time || new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ]);
+    };
+
+    socket.on("connect", joinRoom);
+    socket.on("room-joined", handleRoomJoined);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("room-state", handleRoomState);
+    socket.on("code-change", handleCodeChange);
+    socket.on("file-delete", handleFileDelete);
+    socket.on("participant-joined", handleParticipantJoined);
+    socket.on("participant-left", handleParticipantLeft);
+    socket.on("host-changed", handleHostChanged);
+    socket.on("chat-message", handleChatMessage);
+
+    if (socket.connected) joinRoom();
+
+    return () => {
+      socket.off("connect", joinRoom);
+      socket.off("room-joined", handleRoomJoined);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("room-state", handleRoomState);
+      socket.off("code-change", handleCodeChange);
+      socket.off("file-delete", handleFileDelete);
+      socket.off("participant-joined", handleParticipantJoined);
+      socket.off("participant-left", handleParticipantLeft);
+      socket.off("host-changed", handleHostChanged);
+      socket.off("chat-message", handleChatMessage);
+    };
+  }, [activeFileName, displayName, roomId, socket, user?.token]);
 
   const handleCodeChange = (value) => {
     setFiles((previousFiles) =>
@@ -120,6 +279,22 @@ export default function WorkspaceView() {
           : file
       )
     );
+
+    if (!roomReady) return;
+
+    socket?.emit("code-change", {
+      fileName: activeFileName,
+      content: value || "",
+    });
+  };
+
+  const handleKickParticipant = (participantId) => {
+    if (!roomReady) return;
+
+    socket?.emit("kick-user", {
+      participantId,
+      reason: "Removed by the host",
+    });
   };
 
   const handleCreateFile = () => {
@@ -142,6 +317,12 @@ export default function WorkspaceView() {
     };
 
     setFiles((previousFiles) => [...previousFiles, newFile]);
+    if (!roomReady) return;
+
+    socket?.emit("code-change", {
+      fileName: newFile.name,
+      content: newFile.content,
+    });
     setActiveFileName(trimmedName);
     setNewFileName("");
     setIsCreatingFile(false);
@@ -158,43 +339,53 @@ export default function WorkspaceView() {
     const filteredFiles = files.filter((file) => file.name !== fileName);
 
     setFiles(filteredFiles);
+    if (!roomReady) return;
+
+    socket?.emit("file-delete", { fileName });
 
     if (activeFileName === fileName) {
       setActiveFileName(filteredFiles[0].name);
     }
   };
 
-  const handleRunCode = () => {
+  const handleRunCode = async () => {
     setIsRunning(true);
-    setOutput(`[Compiling ${activeFile.name}...]\nExecuting...`);
-
-    setTimeout(() => {
-      setOutput(
-        `> Running ${activeFile.name}\nHello from CodeSync!\n[Process exited with code 0]`
-      );
-
-      setIsRunning(false);
-    }, 1000);
+    setOutput(`[Compiling ${activeFile.name}...]`);
+    const result = await executeCode(
+      activeFile.content,
+      activeFile.language,
+      user?.token,
+      activeFile.name
+    );
+    setOutput(`${result.success ? "[Compilation successful]" : "[Compilation failed]"}\n${result.output}`);
+    setIsRunning(false);
   };
 
   const handleSendMessage = () => {
     if (!inputMsg.trim()) return;
 
-    const newMessage = {
-      author: displayName,
+    if (!roomReady) return;
+
+    socket?.emit("chat-message", {
+      text: inputMsg.trim(),
       time: new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       }),
-      text: inputMsg,
-    };
-
-    setMessages((previousMessages) => [
-      ...previousMessages,
-      newMessage,
-    ]);
+    });
 
     setInputMsg("");
+  };
+
+  const handleParticipantMute = (participantId) => {
+    const muted = participantMutes[participantId] !== false;
+    if (!roomReady) return;
+
+    socket?.emit("audio-control", { participantId, muted: !muted });
+    setParticipantMutes((currentMutes) => ({
+      ...currentMutes,
+      [participantId]: !muted,
+    }));
   };
 
   const copyRoomLink = () => {
@@ -425,6 +616,17 @@ export default function WorkspaceView() {
                   onChange={handleCodeChange}
                   options={{
                     fontSize: 14,
+                    readOnly: false,
+                    domReadOnly: false,
+                    contextmenu: true,
+                    acceptSuggestionOnCommitCharacter: true,
+                    quickSuggestions: true,
+                    tabCompletion: "on",
+                    wordBasedSuggestions: "currentDocument",
+                    unicodeHighlight: {
+                      ambiguousCharacters: false,
+                      invisibleCharacters: false,
+                    },
                     minimap: {
                       enabled: false,
                     },
@@ -476,13 +678,61 @@ export default function WorkspaceView() {
               activeWorkspace === "whiteboard" ? "block" : "hidden"
             }`}
           >
-            <Whiteboard />
+            <Whiteboard roomId={roomId} socket={socket} roomReady={roomReady} />
           </div>
         </main>
 
         {/* Chat Sidebar */}
         <aside className="flex w-72 shrink-0 flex-col border-l border-[#2a2f40] bg-[#12151e]">
-          <VoiceBar roomId={roomId} socket={socket} />
+          <VoiceBar
+            roomId={roomId}
+            socket={socket}
+            isHost={hostId === socket?.id}
+            roomReady={roomReady}
+          />
+
+          {participants.length > 0 && (
+            <div className="border-b border-[#2a2f40] p-3">
+              <div className="mb-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">
+                <span>Participants</span>
+                <span>{participants.length}</span>
+              </div>
+              <div className="space-y-1.5">
+                {participants.map((participant) => (
+                  <div key={participant.id} className="flex items-center justify-between rounded-md bg-[#181b26] px-2 py-1.5">
+                    <span className="truncate text-xs text-[#cbd5e1]">
+                      {participant.name}
+                      {participant.id === hostId && <span className="ml-1 text-[10px] text-amber-300">Host</span>}
+                    </span>
+                    {hostId === socket?.id && participant.id !== socket?.id && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          title={participantMutes[participant.id] !== false ? "Unmute participant" : "Mute participant"}
+                          onClick={() => handleParticipantMute(participant.id)}
+                          className="rounded p-1 text-[#64748b] hover:bg-emerald-400/10 hover:text-emerald-300"
+                        >
+                          {participantMutes[participant.id] !== false ? (
+                            <MicOff className="h-3.5 w-3.5" />
+                          ) : (
+                            <Mic className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          title="Remove participant"
+                          onClick={() => handleKickParticipant(participant.id)}
+                          className="rounded p-1 text-[#64748b] hover:bg-red-400/10 hover:text-red-300"
+                        >
+                          <UserMinus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="flex border-b border-[#2a2f40]">
             <button

@@ -5,8 +5,16 @@ function getPeerId(payload) {
   return payload?.peerId || payload?.callerId || payload?.userId || payload?.from;
 }
 
-export function useWebRTC(roomId, socket, enabled = true) {
-  const [isMuted, setIsMuted] = useState(false);
+export function useWebRTC(
+  roomId,
+  socket,
+  enabled = true,
+  isHost = false,
+  roomReady = false,
+  hasAudioApproval = false
+) {
+  const [isMuted, setIsMuted] = useState(true);
+  const [canSpeak, setCanSpeak] = useState(isHost);
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [remoteStreams, setRemoteStreams] = useState([]);
@@ -33,6 +41,13 @@ export function useWebRTC(roomId, socket, enabled = true) {
         initiator,
         trickle: false,
         stream,
+        config: {
+          iceServers: [
+            {
+              urls: import.meta.env.VITE_STUN_URL || "stun:stun.l.google.com:19302",
+            },
+          ],
+        },
         objectMode: false,
       });
 
@@ -60,7 +75,7 @@ export function useWebRTC(roomId, socket, enabled = true) {
   );
 
   useEffect(() => {
-    if (!roomId || !socket || !enabled) return undefined;
+    if (!roomId || !socket || !enabled || !roomReady) return undefined;
 
     let disposed = false;
     let activeStream = null;
@@ -74,14 +89,6 @@ export function useWebRTC(roomId, socket, enabled = true) {
         .map((user) => (typeof user === "string" ? user : getPeerId(user)))
         .filter((peerId) => peerId && peerId !== socket.id)
         .forEach((peerId) => createPeer(peerId, stream, true));
-    };
-
-    const handleUserJoined = (payload = {}) => {
-      const peerId = getPeerId(payload);
-      const stream = localStreamRef.current;
-      if (stream && peerId && peerId !== socket.id) {
-        createPeer(peerId, stream, true);
-      }
     };
 
     const handleSignal = ({ from, callerId, peerId, signal } = {}) => {
@@ -104,6 +111,21 @@ export function useWebRTC(roomId, socket, enabled = true) {
     const handleUserLeft = (payload = {}) => {
       const peerId = getPeerId(payload);
       if (peerId) removePeer(peerId);
+    };
+
+    const joinVoice = () => {
+      if (localStreamRef.current && socket.connected) {
+        socket.emit("join-voice", { roomId });
+      }
+    };
+
+    const handleAudioControl = ({ muted } = {}) => {
+      const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+      if (!audioTrack || typeof muted !== "boolean") return;
+
+      audioTrack.enabled = !muted;
+      setIsMuted(muted);
+      setCanSpeak(!muted);
     };
 
     const startVoice = async () => {
@@ -132,8 +154,13 @@ export function useWebRTC(roomId, socket, enabled = true) {
 
         activeStream = stream;
         localStreamRef.current = stream;
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = isHost || hasAudioApproval;
+        });
+        setIsMuted(!(isHost || hasAudioApproval));
+        setCanSpeak(isHost || hasAudioApproval);
         setStatus("connected");
-        socket.emit("join-voice", { roomId });
+        joinVoice();
       } catch (mediaError) {
         setError(
           mediaError.name === "NotAllowedError"
@@ -145,33 +172,37 @@ export function useWebRTC(roomId, socket, enabled = true) {
     };
 
     socket.on("voice-users", handleVoiceUsers);
-    socket.on("user-joined-voice", handleUserJoined);
     socket.on("voice-signal", handleSignal);
     socket.on("return-voice-signal", handleSignal);
     socket.on("user-left-voice", handleUserLeft);
     socket.on("user-disconnected-voice", handleUserLeft);
+    socket.on("audio-control", handleAudioControl);
+    socket.on("connect", joinVoice);
     startVoice();
 
     return () => {
       disposed = true;
       socket.emit("leave-voice", { roomId });
       socket.off("voice-users", handleVoiceUsers);
-      socket.off("user-joined-voice", handleUserJoined);
       socket.off("voice-signal", handleSignal);
       socket.off("return-voice-signal", handleSignal);
       socket.off("user-left-voice", handleUserLeft);
       socket.off("user-disconnected-voice", handleUserLeft);
+      socket.off("audio-control", handleAudioControl);
+      socket.off("connect", joinVoice);
       activePeers.forEach((peer) => peer.destroy());
       activePeers.clear();
       activeStream?.getTracks().forEach((track) => track.stop());
       setRemoteStreams([]);
+      setCanSpeak(false);
       setStatus("idle");
     };
-  }, [createPeer, enabled, removePeer, retryToken, roomId, socket]);
+  }, [createPeer, enabled, hasAudioApproval, isHost, removePeer, retryToken, roomId, roomReady, socket]);
 
   const toggleMute = () => {
     const audioTrack = localStreamRef.current?.getAudioTracks()[0];
     if (!audioTrack) return;
+    if (!audioTrack.enabled && !canSpeak) return;
 
     audioTrack.enabled = !audioTrack.enabled;
     setIsMuted(!audioTrack.enabled);
@@ -185,6 +216,7 @@ export function useWebRTC(roomId, socket, enabled = true) {
 
   return {
     error,
+    canSpeak,
     isMuted,
     isVoiceConnected: status === "connected",
     reconnect,

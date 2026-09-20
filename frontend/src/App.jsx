@@ -13,11 +13,13 @@ import ProfileView from "./views/ProfileView";
 
 import { SocketProvider } from "./contexts/SocketContext";
 import { RoomProvider } from "./contexts/RoomContext";
+import { AuthProvider } from "./contexts/AuthContext";
 
 export default function App() {
   return (
     <Router>
 
+      <AuthProvider>
       <SocketProvider>
 
         <RoomProvider>
@@ -63,6 +65,7 @@ export default function App() {
         </RoomProvider>
 
       </SocketProvider>
+      </AuthProvider>
 
     </Router>
   );

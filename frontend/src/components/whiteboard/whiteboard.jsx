@@ -1,11 +1,66 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Download, Pencil, Trash2 } from "lucide-react";
 import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 
-export default function Whiteboard() {
+export default function Whiteboard({ roomId, socket, roomReady = false }) {
   const editorRef = useRef(null);
+  const applyingRemoteUpdateRef = useRef(false);
+  const [editor, setEditor] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
+
+  useEffect(() => {
+    if (!editor || !socket || !roomId || !roomReady) return undefined;
+
+    const applyRecords = (records) => {
+      const snapshot = Object.values(records || {});
+      applyingRemoteUpdateRef.current = true;
+
+      try {
+        if (snapshot.length === 0) {
+          const shapeIds = [...editor.getCurrentPageShapeIds()];
+          if (shapeIds.length > 0) editor.deleteShapes(shapeIds);
+        } else {
+          const remoteIds = new Set(snapshot.map((record) => record.id));
+          const staleShapeIds = [...editor.getCurrentPageShapeIds()].filter(
+            (shapeId) => !remoteIds.has(shapeId)
+          );
+
+          if (staleShapeIds.length > 0) editor.deleteShapes(staleShapeIds);
+          editor.store.put(snapshot);
+        }
+      } finally {
+        applyingRemoteUpdateRef.current = false;
+      }
+    };
+
+    const handleRoomState = ({ whiteboard }) => {
+      if (!whiteboard) return;
+      applyRecords(whiteboard.store || whiteboard);
+    };
+
+    const handleWhiteboardUpdate = ({ records }) => {
+      applyRecords(records);
+    };
+
+    const stopListening = editor.store.listen(({ source }) => {
+      if (source !== "user" || applyingRemoteUpdateRef.current) return;
+
+      socket.emit("whiteboard-update", {
+        records: editor.store.serialize().store,
+      });
+    });
+
+    socket.on("room-state", handleRoomState);
+    socket.on("whiteboard-update", handleWhiteboardUpdate);
+    socket.emit("whiteboard-sync-request", {});
+
+    return () => {
+      stopListening();
+      socket.off("room-state", handleRoomState);
+      socket.off("whiteboard-update", handleWhiteboardUpdate);
+    };
+  }, [editor, roomId, roomReady, socket]);
 
   const clearWhiteboard = () => {
     const editor = editorRef.current;
@@ -102,6 +157,7 @@ export default function Whiteboard() {
           inferDarkMode={false}
           onMount={(editor) => {
             editorRef.current = editor;
+            setEditor(editor);
           }}
         />
       </div>

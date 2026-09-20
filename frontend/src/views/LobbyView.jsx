@@ -5,39 +5,47 @@ import {
   Plus,
   ArrowRight,
 } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
+import httpClient from "../services/httpClient";
 
 export default function LobbyView() {
   const navigate = useNavigate();
+  const { authenticate } = useAuth();
 
   const [displayName, setDisplayName] = useState("Alex_Dev");
   const [joinRoomId, setJoinRoomId] = useState("");
 
   // CREATE ROOM
-  const handleCreateRoom = () => {
-    const newRoomId = `sync-${Math.random()
-      .toString(36)
-      .substring(2, 8)}`;
+  const handleCreateRoom = async () => {
+    try {
+      const user = await authenticate(displayName);
+      const { data: room } = await httpClient.post("/rooms");
 
-    navigate(`/room/${newRoomId}`, {
-      state: {
-        displayName: displayName.trim() || "Anonymous",
-      },
-    });
+      navigate(`/room/${room.roomCode}`, {
+        state: { displayName: user.displayName },
+      });
+    } catch (error) {
+      window.alert(error.message);
+    }
   };
 
   // JOIN ROOM
-  const handleJoinRoom = () => {
+  const handleJoinRoom = async () => {
     const roomId = joinRoomId.trim();
 
     if (!roomId) {
       return;
     }
 
-    navigate(`/room/${roomId}`, {
-      state: {
-        displayName: displayName.trim() || "Anonymous",
-      },
-    });
+    try {
+      const user = await authenticate(displayName);
+      await httpClient.get(`/rooms/${encodeURIComponent(roomId)}`);
+      navigate(`/room/${roomId}`, {
+        state: { displayName: user.displayName },
+      });
+    } catch (error) {
+      window.alert(error.message);
+    }
   };
 
   // ENTER KEY FOR JOIN

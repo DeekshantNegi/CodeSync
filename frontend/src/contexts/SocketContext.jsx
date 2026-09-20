@@ -12,6 +12,9 @@ class CollaborationSocket {
     this.ws = null;
     this.connected = false;
     this.id = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.shouldReconnect = true;
   }
 
   on(event, handler) {
@@ -34,6 +37,7 @@ class CollaborationSocket {
     this.ws = new WebSocket(this.url);
     this.ws.onopen = () => {
       this.connected = true;
+      this.reconnectAttempt = 0;
       this.id = crypto.randomUUID();
       this.onStatusChange(true);
       this.dispatch('connect', {});
@@ -46,14 +50,28 @@ class CollaborationSocket {
       this.connected = false;
       this.onStatusChange(false);
       this.dispatch('disconnect', {});
+      this.scheduleReconnect();
     };
     this.ws.onerror = () => this.dispatch('connect_error', {});
   }
 
   disconnect() {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
     this.ws?.close();
     this.ws = null;
     this.connected = false;
+  }
+
+  scheduleReconnect() {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 
   dispatch(event, payload) {
