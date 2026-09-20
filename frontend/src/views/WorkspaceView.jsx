@@ -27,6 +27,7 @@ import { useSocketContext } from "../contexts/SocketContext";
 import { useAuth } from "../contexts/AuthContext";
 import { executeCode } from "../services/api";
 import httpClient from "../services/httpClient";
+import AppTopBar from "../components/layout/AppTopBar";
 
 function detectLanguage(filename) {
   const extension = filename.split(".").pop()?.toLowerCase();
@@ -404,7 +405,8 @@ export default function WorkspaceView() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090a0f] font-sans text-[#f1f5f9]">
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090a0f] pt-14 font-sans text-[#f1f5f9]">
+      <AppTopBar />
       {/* Top Navigation */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-[#2a2f40] bg-[#12151e] px-4">
         <div className="flex items-center gap-4">

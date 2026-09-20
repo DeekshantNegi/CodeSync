@@ -16,7 +16,7 @@ export default function ProfileView() {
   };
 
   return (
-    <div className="h-full w-full max-w-3xl mx-auto p-8 flex flex-col">
+    <div className="h-full w-full max-w-3xl mx-auto overflow-y-auto px-8 pb-8 pt-20 flex flex-col">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h2 className="text-xl font-bold tracking-tight">Account & Profile</h2>

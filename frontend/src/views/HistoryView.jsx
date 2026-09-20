@@ -10,7 +10,7 @@ export default function HistoryView() {
   useEffect(() => { httpClient.get('/history').then(({ data }) => setSessions(data)).catch(() => setSessions([])); }, []);
 
   return (
-    <div className="h-full w-full max-w-4xl mx-auto p-8 flex flex-col">
+    <div className="h-full w-full max-w-4xl mx-auto overflow-y-auto px-8 pb-8 pt-20 flex flex-col">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h2 className="text-xl font-bold tracking-tight">Session & Chat History</h2>
