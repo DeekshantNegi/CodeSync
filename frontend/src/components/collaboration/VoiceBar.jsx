@@ -13,25 +13,55 @@ import { useWebRTC } from "../../hooks/useWebRTC";
 
 function RemoteAudio({ stream }) {
 	const audioRef = useRef(null);
+	const [playbackBlocked, setPlaybackBlocked] = useState(false);
 
 	useEffect(() => {
 		const audio = audioRef.current;
 		if (!audio) return;
+		let disposed = false;
 
 		audio.srcObject = stream;
-		audio.play().catch(() => {});
+		audio.play()
+			.then(() => {
+				if (!disposed) setPlaybackBlocked(false);
+			})
+			.catch(() => {
+				if (!disposed) setPlaybackBlocked(true);
+			});
 
 		return () => {
+			disposed = true;
 			audio.pause();
 			audio.srcObject = null;
 		};
 	}, [stream]);
 
-	return <audio ref={audioRef} autoPlay playsInline />;
+	const enablePlayback = () => {
+		const audio = audioRef.current;
+		if (!audio) return;
+		audio.play()
+			.then(() => setPlaybackBlocked(false))
+			.catch(() => setPlaybackBlocked(true));
+	};
+
+	return (
+		<>
+			<audio ref={audioRef} autoPlay playsInline />
+			{playbackBlocked && (
+				<button
+					type="button"
+					onClick={enablePlayback}
+					className="mt-2 rounded bg-amber-400 px-2 py-1 text-[10px] font-semibold text-[#1b1300]"
+				>
+					Click to enable remote audio
+				</button>
+			)}
+		</>
+	);
 }
 
 export default function VoiceBar({ roomId, socket, isHost = false, roomReady = false }) {
-	const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
+	const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
 	const [hasAudioApproval, setHasAudioApproval] = useState(false);
 	const [isRequestPending, setIsRequestPending] = useState(false);
 	const [audioRequest, setAudioRequest] = useState(null);
@@ -86,7 +116,6 @@ export default function VoiceBar({ roomId, socket, isHost = false, roomReady = f
 
 	useEffect(() => {
 		if (!callStartedAt) {
-			setCallDuration(0);
 			return undefined;
 		}
 
@@ -144,6 +173,8 @@ export default function VoiceBar({ roomId, socket, isHost = false, roomReady = f
 				: "Connected · waiting for host"
 			: status === "connecting"
 				? "Connecting microphone..."
+				: status === "error"
+					? "Microphone unavailable"
 				: "Audio is off";
 	const formattedDuration = `${String(Math.floor(callDuration / 60)).padStart(2, "0")}:${String(callDuration % 60).padStart(2, "0")}`;
 

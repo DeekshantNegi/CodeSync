@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 const SocketContext = createContext();
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'ws://localhost:8080/ws';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL
+  || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
 class CollaborationSocket {
   constructor(url, onStatusChange) {
@@ -27,47 +28,85 @@ class CollaborationSocket {
   }
 
   emit(event, payload = {}) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: event, ...payload }));
-    }
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+
+    this.ws.send(JSON.stringify({ type: event, ...payload }));
+    return true;
   }
 
   connect() {
     if (this.ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(this.ws.readyState)) return;
-    this.ws = new WebSocket(this.url);
-    this.ws.onopen = () => {
-      this.connected = true;
-      this.reconnectAttempt = 0;
-      this.id = crypto.randomUUID();
-      this.onStatusChange(true);
-      this.dispatch('connect', {});
-    };
-    this.ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      this.dispatch(message.type, message);
-    };
-    this.ws.onclose = () => {
+
+    this.shouldReconnect = true;
+    this.onStatusChange(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+
+    try {
+      const ws = new WebSocket(this.url);
+      this.ws = ws;
+      ws.onopen = () => {
+        if (this.ws !== ws) return;
+        this.connected = true;
+        this.reconnectAttempt = 0;
+        this.id = null;
+        this.onStatusChange('connected');
+        this.dispatch('connect', {});
+      };
+      ws.onmessage = (event) => {
+        if (this.ws !== ws) return;
+
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          this.dispatch('protocol_error', { message: 'Received invalid server data.' });
+          return;
+        }
+
+        if (!message || typeof message.type !== 'string') {
+          this.dispatch('protocol_error', { message: 'Received an unsupported server message.' });
+          return;
+        }
+        this.dispatch(message.type, message);
+      };
+      ws.onclose = () => {
+        if (this.ws !== ws) return;
+        this.ws = null;
+        this.connected = false;
+        this.onStatusChange('disconnected');
+        this.dispatch('disconnect', {});
+        this.scheduleReconnect();
+      };
+      ws.onerror = () => {
+        if (this.ws === ws) this.dispatch('connect_error', {});
+      };
+    } catch (error) {
       this.connected = false;
-      this.onStatusChange(false);
-      this.dispatch('disconnect', {});
+      this.onStatusChange('error');
+      this.dispatch('connect_error', { message: error.message });
       this.scheduleReconnect();
-    };
-    this.ws.onerror = () => this.dispatch('connect_error', {});
+    }
   }
 
   disconnect() {
     this.shouldReconnect = false;
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
-    this.ws?.close();
+    this.reconnectTimer = null;
+
+    const ws = this.ws;
     this.ws = null;
     this.connected = false;
+    this.onStatusChange('disconnected');
+    if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+    this.dispatch('disconnect', {});
   }
 
   scheduleReconnect() {
     if (!this.shouldReconnect || this.reconnectTimer) return;
 
-    const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+    const backoff = Math.min(1000 * 2 ** this.reconnectAttempt, 10000);
+    const delay = Math.round(backoff * (0.8 + Math.random() * 0.4));
     this.reconnectAttempt += 1;
+    this.onStatusChange('reconnecting');
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
@@ -80,30 +119,31 @@ class CollaborationSocket {
 }
 
 export function SocketProvider({ children }) {
-  const [socket, setSocket] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const socketRef = useRef(null);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [socket] = useState(() => new CollaborationSocket(SOCKET_URL, setConnectionStatus));
 
   useEffect(() => {
-    const socketInstance = new CollaborationSocket(SOCKET_URL, setIsConnected);
-    socketRef.current = socketInstance;
-    setSocket(socketInstance);
+    return () => socket.disconnect();
+  }, [socket]);
 
-    return () => {
-      socketInstance.disconnect();
-    };
-  }, []);
+  const connectSocket = useCallback(() => {
+    socket.connect();
+  }, [socket]);
 
-  const connectSocket = () => {
-    if (socketRef.current && !socketRef.current.connected) socketRef.current.connect();
-  };
-
-  const disconnectSocket = () => {
-    if (socketRef.current?.connected) socketRef.current.disconnect();
-  };
+  const disconnectSocket = useCallback(() => {
+    socket.disconnect();
+  }, [socket]);
 
   return (
-    <SocketContext.Provider value={{ socket, isConnected, connectSocket, disconnectSocket }}>
+    <SocketContext.Provider
+      value={{
+        socket,
+        connectionStatus,
+        isConnected: connectionStatus === 'connected',
+        connectSocket,
+        disconnectSocket,
+      }}
+    >
       {children}
     </SocketContext.Provider>
   );

@@ -29,7 +29,10 @@ public class SecurityConfig {
             @Value("${codesync.allowed-origins}") String allowedOrigins
     ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
-        this.allowedOrigins = allowedOrigins.split(",");
+        this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
+                .map(origin -> origin.trim())
+                .filter(origin -> !origin.isEmpty())
+                .toArray(String[]::new);
     }
 
     @Bean

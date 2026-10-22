@@ -6,6 +6,8 @@ import "tldraw/tldraw.css";
 export default function Whiteboard({ roomId, socket, roomReady = false }) {
   const editorRef = useRef(null);
   const applyingRemoteUpdateRef = useRef(false);
+  const pendingPutRef = useRef(new Map());
+  const pendingRemoveRef = useRef(new Set());
   const [editor, setEditor] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -21,12 +23,6 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
           const shapeIds = [...editor.getCurrentPageShapeIds()];
           if (shapeIds.length > 0) editor.deleteShapes(shapeIds);
         } else {
-          const remoteIds = new Set(snapshot.map((record) => record.id));
-          const staleShapeIds = [...editor.getCurrentPageShapeIds()].filter(
-            (shapeId) => !remoteIds.has(shapeId)
-          );
-
-          if (staleShapeIds.length > 0) editor.deleteShapes(staleShapeIds);
           editor.store.put(snapshot);
         }
       } finally {
@@ -34,28 +30,74 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
       }
     };
 
+    const applyChanges = ({ put = [], remove = [] } = {}) => {
+      applyingRemoteUpdateRef.current = true;
+      try {
+        if (remove.length > 0) editor.store.remove(remove);
+        if (put.length > 0) editor.store.put(put);
+      } finally {
+        applyingRemoteUpdateRef.current = false;
+      }
+    };
+
     const handleRoomState = ({ whiteboard }) => {
       if (!whiteboard) return;
-      applyRecords(whiteboard.store || whiteboard);
+      applyRecords(whiteboard);
     };
 
-    const handleWhiteboardUpdate = ({ records }) => {
-      applyRecords(records);
+    const handleWhiteboardUpdate = ({ changes }) => {
+      if (changes) applyChanges(changes);
     };
 
-    const stopListening = editor.store.listen(({ source }) => {
+    let flushTimer = null;
+
+    const flushChanges = () => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (pendingPutRef.current.size === 0 && pendingRemoveRef.current.size === 0) return;
+
+      const sent = socket.emit("whiteboard-update", {
+        changes: {
+          put: [...pendingPutRef.current.values()],
+          remove: [...pendingRemoveRef.current],
+        },
+      });
+      if (sent) {
+        pendingPutRef.current.clear();
+        pendingRemoveRef.current.clear();
+      }
+    };
+
+    const stopListening = editor.store.listen(({ source, changes }) => {
       if (source !== "user" || applyingRemoteUpdateRef.current) return;
 
-      socket.emit("whiteboard-update", {
-        records: editor.store.serialize().store,
+      Object.entries(changes.added).forEach(([id, record]) => {
+        pendingRemoveRef.current.delete(id);
+        pendingPutRef.current.set(id, record);
       });
-    });
+      Object.entries(changes.updated).forEach(([id, [, record]]) => {
+        pendingRemoveRef.current.delete(id);
+        pendingPutRef.current.set(id, record);
+      });
+      Object.keys(changes.removed).forEach((id) => {
+        pendingPutRef.current.delete(id);
+        pendingRemoveRef.current.add(id);
+      });
+
+      if (flushTimer === null) {
+        flushTimer = window.setTimeout(flushChanges, 50);
+      }
+    }, { source: "user", scope: "document" });
 
     socket.on("room-state", handleRoomState);
     socket.on("whiteboard-update", handleWhiteboardUpdate);
+    flushChanges();
     socket.emit("whiteboard-sync-request", {});
 
     return () => {
+      flushChanges();
       stopListening();
       socket.off("room-state", handleRoomState);
       socket.off("whiteboard-update", handleWhiteboardUpdate);
@@ -122,8 +164,8 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
             </h2>
 
             <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              <span>Live classroom workspace</span>
+              <span className={`h-2 w-2 rounded-full ${roomReady ? "bg-emerald-400" : "bg-amber-400"}`} />
+              <span>{roomReady ? "Live classroom workspace" : "Waiting for room connection"}</span>
             </div>
           </div>
         </div>
@@ -133,6 +175,7 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
           <button
             type="button"
             onClick={clearWhiteboard}
+            disabled={!roomReady}
             className="flex items-center gap-1.5 rounded-lg border border-[#343946] bg-[#1a1e28] px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -152,7 +195,9 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
       </header>
 
       {/* Whiteboard Area */}
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#e9edf2] [&_.tl-container]:!font-sans">
+      <div className={`relative min-h-0 flex-1 overflow-hidden bg-[#e9edf2] [&_.tl-container]:!font-sans ${
+        roomReady ? "" : "pointer-events-none opacity-70"
+      }`}>
         <Tldraw
           inferDarkMode={false}
           onMount={(editor) => {

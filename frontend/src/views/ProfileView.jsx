@@ -55,19 +55,19 @@ export default function ProfileView() {
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-[#64748b] mb-2">Editor Theme</label>
             <select className="w-full bg-[#12151e] border border-[#2a2f40] rounded-lg px-3 py-2 text-xs outline-none focus:border-[#3b82f6] text-[#f1f5f9]">
               <option>Dark Plus (Default)</option>
-              <option>One Dark Pro</option>
-              <option>Dracula</option>
+              {/* <option>One Dark Pro</option>
+              <option>Dracula</option> */}
             </select>
           </div>
         </div>
         <button type="button" onClick={saveProfile} className="mt-5 rounded-lg bg-[#3b82f6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2563eb]">{saved ? 'Saved' : 'Save profile'}</button>
       </div>
 
-      <div className="bg-[#181b26] border border-[#2a2f40] p-6 rounded-xl">
+      {/* <div className="bg-[#181b26] border border-[#2a2f40] p-6 rounded-xl">
         <h4 className="text-sm font-semibold mb-1">Authentication & Security</h4>
         <p className="text-xs text-[#94a3b8] mb-4">Connect a permanent account to save your room history permanently across devices.</p>
         <p className="text-xs text-[#64748b]">JWT authentication is active for this account.</p>
-      </div>
+      </div> */}
     </div>
   );
 }

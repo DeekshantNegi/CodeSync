@@ -7,6 +7,31 @@ export default defineConfig({
   define: {
     global: "globalThis",
   },
+  server: {
+    host: '127.0.0.1',
+    allowedHosts: process.env.VITE_ALLOWED_HOST ? [process.env.VITE_ALLOWED_HOST] : [],
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader('Origin', 'http://localhost:5173')
+          })
+        },
+      },
+      '/ws': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+        ws: true,
+        configure: (proxy) => {
+          proxy.on('proxyReqWs', (proxyReq) => {
+            proxyReq.setHeader('Origin', 'http://localhost:5173')
+          })
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     tailwindcss(),

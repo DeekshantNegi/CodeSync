@@ -12,7 +12,7 @@ export default function LobbyView() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const [displayName, setDisplayName] = useState("Alex_Dev");
+  const [displayName, setDisplayName] = useState("Test_user");
   const [joinRoomId, setJoinRoomId] = useState("");
 
   // CREATE ROOM
@@ -123,7 +123,7 @@ export default function LobbyView() {
               onChange={(event) =>
                 setDisplayName(event.target.value)
               }
-              placeholder="e.g. alex_dev"
+              placeholder="e.g. user1"
               maxLength={30}
               className="w-full h-11 bg-[#10131b] border border-[#2a2f40] rounded-lg px-3.5 text-sm text-[#f1f5f9] outline-none placeholder:text-[#64748b] focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6] transition-all"
             />

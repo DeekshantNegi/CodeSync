@@ -5,6 +5,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 
 import java.util.Arrays;
 
@@ -20,7 +22,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     ) {
         this.collaborationWebSocketHandler = collaborationWebSocketHandler;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
-            .map(String::trim)
+            .map(origin -> origin.trim())
             .filter(origin -> !origin.isEmpty())
             .toArray(String[]::new);
     }
@@ -29,5 +31,12 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(collaborationWebSocketHandler, "/ws")
             .setAllowedOrigins(allowedOrigins);
+    }
+
+    @Bean
+    public ServletServerContainerFactoryBean webSocketContainer() {
+        ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+        container.setMaxTextMessageBufferSize(2_100_000);
+        return container;
     }
 }

@@ -5,6 +5,22 @@ function getPeerId(payload) {
   return payload?.peerId || payload?.callerId || payload?.userId || payload?.from;
 }
 
+function getIceServers() {
+  const servers = [{
+    urls: import.meta.env.VITE_STUN_URL || "stun:stun.l.google.com:19302",
+  }];
+  const turnUrls = import.meta.env.VITE_TURN_URL;
+
+  if (turnUrls) {
+    servers.push({
+      urls: turnUrls.split(",").map((url) => url.trim()).filter(Boolean),
+      username: import.meta.env.VITE_TURN_USERNAME,
+      credential: import.meta.env.VITE_TURN_CREDENTIAL,
+    });
+  }
+  return servers;
+}
+
 export function useWebRTC(
   roomId,
   socket,
@@ -41,13 +57,7 @@ export function useWebRTC(
         initiator,
         trickle: false,
         stream,
-        config: {
-          iceServers: [
-            {
-              urls: import.meta.env.VITE_STUN_URL || "stun:stun.l.google.com:19302",
-            },
-          ],
-        },
+        config: { iceServers: getIceServers() },
         objectMode: false,
       });
 
@@ -68,7 +78,10 @@ export function useWebRTC(
       });
 
       peer.on("close", () => removePeer(peerId));
-      peer.on("error", () => removePeer(peerId));
+      peer.on("error", (peerError) => {
+        setError(`Voice connection failed: ${peerError.message || "the peer could not be reached."}`);
+        removePeer(peerId);
+      });
       peersRef.current.set(peerId, peer);
     },
     [removePeer, roomId, socket]
@@ -128,6 +141,24 @@ export function useWebRTC(
       setCanSpeak(!muted);
     };
 
+    const clearPeers = () => {
+      activePeers.forEach((peer) => peer.destroy());
+      activePeers.clear();
+      setRemoteStreams([]);
+    };
+
+    const handleSocketDisconnect = () => {
+      clearPeers();
+      setStatus("connecting");
+    };
+
+    const handleTrackEnded = () => {
+      setError("The microphone disconnected. Reconnect it and retry room audio.");
+      setIsMuted(true);
+      setCanSpeak(false);
+      setStatus("error");
+    };
+
     const startVoice = async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
         setError("This browser does not support microphone access.");
@@ -156,6 +187,7 @@ export function useWebRTC(
         localStreamRef.current = stream;
         stream.getAudioTracks().forEach((track) => {
           track.enabled = isHost || hasAudioApproval;
+          track.addEventListener("ended", handleTrackEnded);
         });
         setIsMuted(!(isHost || hasAudioApproval));
         setCanSpeak(isHost || hasAudioApproval);
@@ -165,7 +197,11 @@ export function useWebRTC(
         setError(
           mediaError.name === "NotAllowedError"
             ? "Microphone permission is blocked. Allow access in your browser settings."
-            : "Unable to access the microphone."
+            : mediaError.name === "NotFoundError"
+              ? "No microphone was found. Connect a microphone and try again."
+              : mediaError.name === "NotReadableError"
+                ? "The microphone is busy or unavailable to this browser."
+                : `Unable to access the microphone: ${mediaError.message || "unknown device error."}`
         );
         setStatus("error");
       }
@@ -178,11 +214,12 @@ export function useWebRTC(
     socket.on("user-disconnected-voice", handleUserLeft);
     socket.on("audio-control", handleAudioControl);
     socket.on("connect", joinVoice);
+    socket.on("disconnect", handleSocketDisconnect);
     startVoice();
 
     return () => {
       disposed = true;
-      socket.emit("leave-voice", { roomId });
+      if (activeStream) socket.emit("leave-voice", { roomId });
       socket.off("voice-users", handleVoiceUsers);
       socket.off("voice-signal", handleSignal);
       socket.off("return-voice-signal", handleSignal);
@@ -190,9 +227,12 @@ export function useWebRTC(
       socket.off("user-disconnected-voice", handleUserLeft);
       socket.off("audio-control", handleAudioControl);
       socket.off("connect", joinVoice);
-      activePeers.forEach((peer) => peer.destroy());
-      activePeers.clear();
-      activeStream?.getTracks().forEach((track) => track.stop());
+      socket.off("disconnect", handleSocketDisconnect);
+      activeStream?.getTracks().forEach((track) => {
+        track.removeEventListener("ended", handleTrackEnded);
+        track.stop();
+      });
+      if (localStreamRef.current === activeStream) localStreamRef.current = null;
       setRemoteStreams([]);
       setCanSpeak(false);
       setStatus("idle");
@@ -201,8 +241,7 @@ export function useWebRTC(
 
   const toggleMute = () => {
     const audioTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (!audioTrack) return;
-    if (!audioTrack.enabled && !canSpeak) return;
+    if (!audioTrack || !canSpeak) return;
 
     audioTrack.enabled = !audioTrack.enabled;
     setIsMuted(!audioTrack.enabled);

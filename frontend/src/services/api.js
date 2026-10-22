@@ -2,7 +2,7 @@ import httpClient from './httpClient';
 
 export async function fetchSessionHistory() {
   try {
-    const { data } = await httpClient.get('/sessions');
+    const { data } = await httpClient.get('/history');
     return data;
   } catch (error) {
     console.error(error);
@@ -10,14 +10,14 @@ export async function fetchSessionHistory() {
   }
 }
 
-export async function executeCode(code, language, token, fileName) {
+export async function executeCode(code, language, token, fileName, stdin = '') {
   try {
     const { data } = await httpClient.post('/execute',
-      { code, language, fileName },
+      { code, language, fileName, stdin },
       token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
     );
     return data;
   } catch (error) {
-    return { success: false, output: error.message };
+    throw new Error(error.response?.data?.stderr || error.message || 'Code execution failed.');
   }
 }

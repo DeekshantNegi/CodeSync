@@ -12,6 +12,8 @@ import org.springframework.web.socket.WebSocketSession;
 import java.io.IOException;
 import java.util.Map;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Set;
 import java.time.Instant;
@@ -19,6 +21,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class CollaborationRoomService {
+    private static final int MAX_EDITOR_UPDATE_LENGTH = 2_000_000;
+    private static final long MAX_EDITOR_HISTORY_BYTES = 16_000_000;
+    private static final int MAX_EDITOR_HISTORY_UPDATES = 20_000;
     private final ObjectMapper objectMapper;
     private final Map<String, Room> rooms = new ConcurrentHashMap<>();
     private final Map<String, Participant> participantsBySession = new ConcurrentHashMap<>();
@@ -36,7 +41,19 @@ public class CollaborationRoomService {
         ) throws IOException {
         String safeRoomId = roomId == null || roomId.isBlank() ? "default" : roomId.trim();
         String safeName = displayName == null || displayName.isBlank() ? "Guest" : displayName.trim();
-        Room room = rooms.computeIfAbsent(safeRoomId, Room::new);
+        Participant current = participantsBySession.get(session.getId());
+        if (current != null && current.roomId().equals(safeRoomId)) {
+            Room currentRoom = rooms.get(safeRoomId);
+            if (currentRoom != null) {
+                send(session, roomState(currentRoom, session.getId()));
+                send(session, message("room-joined").put("roomId", safeRoomId));
+                return;
+            }
+        }
+        if (current != null) {
+            leave(session);
+        }
+        Room room = rooms.computeIfAbsent(safeRoomId, id -> new Room(id, objectMapper));
         boolean host = userId.equals(hostUserId);
         Participant participant = new Participant(session.getId(), userId, safeName, safeRoomId, host, session);
 
@@ -84,11 +101,28 @@ public class CollaborationRoomService {
         if (room.participants.isEmpty()) {
             rooms.remove(participant.roomId, room);
         }
+
+        List<String> availableEditors = new ArrayList<>();
+        room.editorSeedOwners.forEach((fileName, ownerId) -> {
+            if (ownerId.equals(participant.sessionId())) {
+                room.editorSeedOwners.remove(fileName, ownerId);
+                Set<String> updates = room.editorUpdates.get(fileName);
+                if (updates == null || updates.isEmpty()) {
+                    availableEditors.add(fileName);
+                }
+            }
+        });
+        for (String fileName : availableEditors) {
+            broadcast(room, message("editor-seed-available").put("fileName", fileName), null);
+        }
     }
 
     public void route(String type, JsonNode payload, WebSocketSession sender) throws IOException {
         Participant participant = participantsBySession.get(sender.getId());
         if (participant == null) {
+            if ("leave-room".equals(type) || "leave-voice".equals(type)) {
+                return;
+            }
             sendError(sender, "Join a room before sending collaboration events.");
             return;
         }
@@ -100,11 +134,15 @@ public class CollaborationRoomService {
         }
 
         switch (type) {
+            case "leave-room" -> leave(sender);
             case "code-change" -> broadcastCode(room, payload, participant.sessionId());
             case "file-delete" -> deleteFile(room, payload, participant.sessionId());
             case "whiteboard-update" -> broadcastWhiteboard(room, payload, participant.sessionId());
             case "whiteboard-sync-request" -> send(sender, roomState(room, sender.getId()));
+            case "editor-sync-request" -> sendEditorSyncState(room, participant, payload);
+            case "editor-update" -> routeEditorUpdate(room, participant, payload);
             case "chat-message" -> broadcastChat(room, participant, payload);
+            case "code-result" -> broadcastCodeResult(room, participant, payload);
             case "join-voice" -> joinVoice(room, participant);
             case "leave-voice" -> leaveVoice(room, participant);
             case "voice-signal" -> relayToTarget(payload, type, sender);
@@ -120,7 +158,14 @@ public class CollaborationRoomService {
         JsonNode fileName = payload.get("fileName");
         JsonNode content = payload.get("content");
         if (fileName != null && content != null) {
-            room.files.put(fileName.asText(), content);
+            synchronized (room) {
+                ObjectNode file = objectMapper.createObjectNode();
+                file.set("content", content.deepCopy());
+                if (payload.has("language")) {
+                    file.set("language", payload.get("language").deepCopy());
+                }
+                room.files.put(fileName.asText(), file);
+            }
         }
         broadcast(room, withId(message("code-change"), senderId, payload), senderId);
     }
@@ -128,16 +173,131 @@ public class CollaborationRoomService {
     private void deleteFile(Room room, JsonNode payload, String senderId) throws IOException {
         String fileName = text(payload, "fileName");
         if (!fileName.isBlank()) {
-            room.files.remove(fileName);
+            synchronized (room) {
+                room.files.remove(fileName);
+                room.editorUpdates.remove(fileName);
+                room.editorHistoryBytes.remove(fileName);
+                room.editorSeedOwners.remove(fileName);
+            }
             broadcast(room, withId(message("file-delete"), senderId, payload), senderId);
         }
     }
 
     private void broadcastWhiteboard(Room room, JsonNode payload, String senderId) throws IOException {
-        if (payload.has("records")) {
-            room.whiteboard = payload.get("records");
+        JsonNode changes = payload.path("changes");
+        JsonNode records = changes.path("put");
+        JsonNode removals = changes.path("remove");
+        synchronized (room) {
+            if (records.isArray()) {
+                for (JsonNode record : records) {
+                    String id = text(record, "id");
+                    if (!id.isBlank()) {
+                        room.whiteboard.set(id, record.deepCopy());
+                    }
+                }
+            }
+            if (removals.isArray()) {
+                for (JsonNode id : removals) {
+                    if (id.isTextual()) {
+                        room.whiteboard.remove(id.asText());
+                    }
+                }
         }
-        broadcast(room, withId(message("whiteboard-update"), senderId, payload), senderId);
+        }
+        if (records.isArray() || removals.isArray()) {
+            broadcast(room, withId(message("whiteboard-update"), senderId, payload), senderId);
+        }
+    }
+
+    private void sendEditorSyncState(Room room, Participant participant, JsonNode payload) throws IOException {
+        String fileName = text(payload, "fileName");
+        if (fileName.isBlank()) {
+            sendError(participant.session(), "An editor file name is required.");
+            return;
+        }
+        List<String> updates;
+        boolean canSeed = false;
+        synchronized (room) {
+            if (!room.files.containsKey(fileName)) {
+                sendError(participant.session(), "The requested collaborative file does not exist.");
+                return;
+            }
+            Set<String> storedUpdates = room.editorUpdates.computeIfAbsent(
+                    fileName,
+                    ignored -> ConcurrentHashMap.newKeySet()
+            );
+            updates = List.copyOf(storedUpdates);
+            if (storedUpdates.isEmpty()) {
+                String seedOwner = room.editorSeedOwners.putIfAbsent(fileName, participant.sessionId());
+                canSeed = seedOwner == null || seedOwner.equals(participant.sessionId());
+            }
+        }
+
+        ObjectNode response = message("editor-sync-state").put("fileName", fileName);
+        ArrayNode encodedUpdates = response.putArray("updates");
+        updates.forEach(encodedUpdates::add);
+        response.put("canSeed", canSeed);
+        send(participant.session(), response);
+    }
+
+    private void routeEditorUpdate(Room room, Participant participant, JsonNode payload) throws IOException {
+        String fileName = text(payload, "fileName");
+        String encodedUpdate = text(payload, "update");
+        if (fileName.isBlank() || encodedUpdate.isBlank() || encodedUpdate.length() > MAX_EDITOR_UPDATE_LENGTH) {
+            sendError(participant.session(), "The collaborative editor update is invalid or too large.");
+            return;
+        }
+        try {
+            Base64.getDecoder().decode(encodedUpdate);
+        } catch (IllegalArgumentException exception) {
+            sendError(participant.session(), "The collaborative editor update is not valid base64 data.");
+            return;
+        }
+
+        boolean isNew;
+        synchronized (room) {
+            if (!room.files.containsKey(fileName)) {
+                sendError(participant.session(), "The requested collaborative file no longer exists.");
+                return;
+            }
+            Set<String> updates = room.editorUpdates.computeIfAbsent(
+                    fileName,
+                    ignored -> ConcurrentHashMap.newKeySet()
+            );
+            isNew = !updates.contains(encodedUpdate);
+            long currentBytes = room.editorHistoryBytes.getOrDefault(fileName, 0L);
+            if (isNew && (updates.size() >= MAX_EDITOR_HISTORY_UPDATES
+                    || currentBytes + encodedUpdate.length() > MAX_EDITOR_HISTORY_BYTES)) {
+                sendError(participant.session(), "This room has reached its collaborative editor history limit.");
+                return;
+            }
+            if (isNew) {
+                updates.add(encodedUpdate);
+                room.editorHistoryBytes.put(fileName, currentBytes + encodedUpdate.length());
+            }
+        }
+        if (isNew) {
+            ObjectNode update = message("editor-update");
+            update.put("fileName", fileName);
+            update.put("update", encodedUpdate);
+            update.put("from", participant.sessionId());
+            broadcast(room, update, participant.sessionId());
+        }
+    }
+
+    private void broadcastCodeResult(Room room, Participant participant, JsonNode payload) throws IOException {
+        JsonNode result = payload.get("result");
+        if (result == null || !result.isObject()) {
+            sendError(participant.session(), "The compile result is invalid.");
+            return;
+        }
+        ObjectNode message = withSender(message("code-result"), participant, payload);
+        synchronized (room) {
+            room.lastCodeResult = result.deepCopy();
+            room.lastCodeResultAuthor = participant.displayName();
+            room.lastCodeResultFile = text(payload, "fileName");
+        }
+        broadcast(room, message, null);
     }
 
     private void joinVoice(Room room, Participant participant) throws IOException {
@@ -231,7 +391,9 @@ public class CollaborationRoomService {
 
     private void relayToTarget(JsonNode payload, String type, WebSocketSession sender) throws IOException {
         Participant target = participantsBySession.get(text(payload, "to"));
-        if (target == null) {
+        Participant senderParticipant = participantsBySession.get(sender.getId());
+        if (target == null || senderParticipant == null
+                || !target.roomId().equals(senderParticipant.roomId())) {
             return;
         }
         ObjectNode signal = message(type).set("signal", payload.get("signal"));
@@ -253,8 +415,18 @@ public class CollaborationRoomService {
         room.files.forEach(files::set);
         ArrayNode messages = state.putArray("messages");
         room.messages.forEach(messages::add);
-        if (room.whiteboard != null) {
-            state.set("whiteboard", room.whiteboard);
+        synchronized (room) {
+            if (room.whiteboard != null) {
+                state.set("whiteboard", room.whiteboard.deepCopy());
+            }
+        }
+        synchronized (room) {
+            if (room.lastCodeResult != null) {
+                ObjectNode codeResult = state.putObject("codeResult");
+                codeResult.set("result", room.lastCodeResult.deepCopy());
+                codeResult.put("displayName", room.lastCodeResultAuthor);
+                codeResult.put("fileName", room.lastCodeResultFile);
+            }
         }
         if (room.voiceStartedAt != null) {
             state.put("voiceStartedAt", room.voiceStartedAt.toString());
@@ -336,12 +508,19 @@ public class CollaborationRoomService {
         private final Map<String, JsonNode> files = new ConcurrentHashMap<>();
         private final List<JsonNode> messages = new CopyOnWriteArrayList<>();
         private final Set<String> voiceParticipants = ConcurrentHashMap.newKeySet();
+        private final Map<String, Set<String>> editorUpdates = new ConcurrentHashMap<>();
+        private final Map<String, Long> editorHistoryBytes = new ConcurrentHashMap<>();
+        private final Map<String, String> editorSeedOwners = new ConcurrentHashMap<>();
         private String hostSessionId;
-        private JsonNode whiteboard;
+        private ObjectNode whiteboard;
+        private JsonNode lastCodeResult;
+        private String lastCodeResultAuthor;
+        private String lastCodeResultFile;
         private Instant voiceStartedAt;
 
-        private Room(String roomId) {
+        private Room(String roomId, ObjectMapper objectMapper) {
             this.roomId = roomId;
+            this.whiteboard = objectMapper.createObjectNode();
         }
     }
 }

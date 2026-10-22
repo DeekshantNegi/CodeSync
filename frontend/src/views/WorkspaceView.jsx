@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 
@@ -24,6 +24,7 @@ import {
 import Whiteboard from "../components/whiteboard/whiteboard";
 import VoiceBar from "../components/collaboration/VoiceBar";
 import { useSocketContext } from "../contexts/SocketContext";
+import { useYjs } from "../hooks/useYjs";
 import { useAuth } from "../contexts/AuthContext";
 import { executeCode } from "../services/api";
 import httpClient from "../services/httpClient";
@@ -57,11 +58,35 @@ function detectLanguage(filename) {
   }
 }
 
+function formatExecutionResult(result, author) {
+  const status = result.timedOut
+    ? "Program timed out"
+    : result.success
+      ? "Program finished successfully"
+      : "Program exited with errors";
+  const lines = [`${author ? `${author}: ` : ""}${status} (exit ${result.exitCode ?? "unknown"})`];
+
+  if (result.stdout) lines.push(`stdout:\n${result.stdout}`);
+  if (result.stderr) lines.push(`stderr:\n${result.stderr}`);
+  if (!result.stdout && !result.stderr && result.output) lines.push(result.output);
+  if (result.truncated) lines.push("[output truncated]");
+  return lines.join("\n");
+}
+
+function initialFileContent(fileName, language) {
+  if (language === "python") return `# New file: ${fileName}\n`;
+  if (language === "html") return `<!-- New file: ${fileName} -->\n`;
+  if (language === "json") return "{}\n";
+  if (["css", "scss"].includes(language)) return `/* New file: ${fileName} */\n`;
+  if (language === "plaintext") return "";
+  return `// New file: ${fileName}\n`;
+}
+
 export default function WorkspaceView() {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { socket } = useSocketContext();
+  const { socket, connectionStatus } = useSocketContext();
   const { user } = useAuth();
 
   const displayName = location.state?.displayName || "Developer";
@@ -93,6 +118,8 @@ export default function WorkspaceView() {
 
   // Output and invite state
   const [output, setOutput] = useState("");
+  const [stdin, setStdin] = useState("");
+  const [collaborationError, setCollaborationError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -122,6 +149,28 @@ export default function WorkspaceView() {
 
   const activeFile =
     files.find((file) => file.name === activeFileName) || files[0];
+  const activeFileNameRef = useRef(activeFileName);
+  const [editorInstance, setEditorInstance] = useState(null);
+
+  useEffect(() => {
+    activeFileNameRef.current = activeFileName;
+  }, [activeFileName]);
+
+  const handleCollaborativeContent = useCallback((fileName, content) => {
+    setFiles((currentFiles) =>
+      currentFiles.map((file) => file.name === fileName ? { ...file, content } : file)
+    );
+  }, []);
+
+  const { removeDocument: removeEditorDocument } = useYjs({
+    roomId,
+    socket,
+    editor: editorInstance,
+    fileName: activeFile?.name,
+    content: activeFile?.content || "",
+    roomReady,
+    onContentChange: handleCollaborativeContent,
+  });
 
   useEffect(() => {
     if (!socket || !roomId) return undefined;
@@ -136,7 +185,14 @@ export default function WorkspaceView() {
       });
     };
 
-    const handleRoomState = ({ participantId, participants: nextParticipants, hostId: nextHostId, files: nextFiles, messages: nextMessages }) => {
+    const handleRoomState = ({
+      participantId,
+      participants: nextParticipants,
+      hostId: nextHostId,
+      files: nextFiles,
+      messages: nextMessages,
+      codeResult,
+    }) => {
       socket.id = participantId;
       setParticipants(nextParticipants || []);
       setHostId(nextHostId || null);
@@ -156,36 +212,58 @@ export default function WorkspaceView() {
             const current = currentFiles.find((file) => file.name === name);
             return {
               name,
-              language: current?.language || detectLanguage(name),
-              content: content?.content || content || "",
+              language: content?.language || current?.language || detectLanguage(name),
+              content: content?.content ?? content ?? "",
             };
           })
         );
       }
 
-      if (nextHostId === participantId) {
+      if (codeResult?.result) {
+        setOutput(formatExecutionResult(codeResult.result, codeResult.displayName));
+      }
+
+      if (nextHostId === participantId && Object.keys(nextFiles || {}).length === 0) {
         filesRef.current.forEach((file) => {
-          socket.emit("code-change", { fileName: file.name, content: file.content });
+          socket.emit("code-change", {
+            fileName: file.name,
+            content: file.content,
+            language: file.language,
+          });
         });
       }
     };
 
-    const handleRoomJoined = () => setRoomReady(true);
-    const handleDisconnect = () => setRoomReady(false);
+    const handleRoomJoined = () => {
+      setRoomReady(true);
+      setCollaborationError("");
+    };
+    const handleDisconnect = () => {
+      setRoomReady(false);
+      setCollaborationError("Connection lost. Reconnecting to the room...");
+    };
+    const handleServerError = ({ message }) => {
+      setCollaborationError(message || "The server rejected a collaboration update.");
+    };
+    const handleConnectionError = () => {
+      setCollaborationError("Unable to connect to the collaboration server. Retrying...");
+    };
 
-    const handleCodeChange = ({ fileName, content }) => {
+    const handleCodeChange = ({ fileName, content, language }) => {
       if (!fileName || content === undefined) return;
       setFiles((currentFiles) => {
         const hasFile = currentFiles.some((file) => file.name === fileName);
         if (hasFile) {
           return currentFiles.map((file) =>
-            file.name === fileName ? { ...file, content } : file
+            file.name === fileName
+              ? { ...file, content, language: language || file.language }
+              : file
           );
         }
 
         return [
           ...currentFiles,
-          { name: fileName, language: detectLanguage(fileName), content },
+          { name: fileName, language: language || detectLanguage(fileName), content },
         ];
       });
     };
@@ -195,7 +273,7 @@ export default function WorkspaceView() {
       setFiles((currentFiles) => {
         const remainingFiles = currentFiles.filter((file) => file.name !== fileName);
 
-        if (activeFileName === fileName && remainingFiles.length > 0) {
+        if (activeFileNameRef.current === fileName && remainingFiles.length > 0) {
           setActiveFileName(remainingFiles[0].name);
         }
 
@@ -248,7 +326,14 @@ export default function WorkspaceView() {
       ]);
     };
 
+    const handleCodeResult = ({ result, displayName: author }) => {
+      if (result) setOutput(formatExecutionResult(result, author));
+    };
+
     socket.on("connect", joinRoom);
+    socket.on("connect_error", handleConnectionError);
+    socket.on("error", handleServerError);
+    socket.on("protocol_error", handleServerError);
     socket.on("room-joined", handleRoomJoined);
     socket.on("disconnect", handleDisconnect);
     socket.on("room-state", handleRoomState);
@@ -258,11 +343,15 @@ export default function WorkspaceView() {
     socket.on("participant-left", handleParticipantLeft);
     socket.on("host-changed", handleHostChanged);
     socket.on("chat-message", handleChatMessage);
+    socket.on("code-result", handleCodeResult);
 
     if (socket.connected) joinRoom();
 
     return () => {
       socket.off("connect", joinRoom);
+      socket.off("connect_error", handleConnectionError);
+      socket.off("error", handleServerError);
+      socket.off("protocol_error", handleServerError);
       socket.off("room-joined", handleRoomJoined);
       socket.off("disconnect", handleDisconnect);
       socket.off("room-state", handleRoomState);
@@ -272,28 +361,10 @@ export default function WorkspaceView() {
       socket.off("participant-left", handleParticipantLeft);
       socket.off("host-changed", handleHostChanged);
       socket.off("chat-message", handleChatMessage);
+      socket.off("code-result", handleCodeResult);
+      socket.emit("leave-room", {});
     };
-  }, [activeFileName, displayName, roomId, socket, user?.token]);
-
-  const handleCodeChange = (value) => {
-    setFiles((previousFiles) =>
-      previousFiles.map((file) =>
-        file.name === activeFileName
-          ? {
-              ...file,
-              content: value || "",
-            }
-          : file
-      )
-    );
-
-    if (!roomReady) return;
-
-    socket?.emit("code-change", {
-      fileName: activeFileName,
-      content: value || "",
-    });
-  };
+  }, [displayName, roomId, socket, user?.token]);
 
   const handleKickParticipant = (participantId) => {
     if (!roomReady) return;
@@ -320,19 +391,20 @@ export default function WorkspaceView() {
     const newFile = {
       name: trimmedName,
       language: detectLanguage(trimmedName),
-      content: `// New file: ${trimmedName}\n`,
+      content: initialFileContent(trimmedName, detectLanguage(trimmedName)),
     };
 
     setFiles((previousFiles) => [...previousFiles, newFile]);
-    if (!roomReady) return;
-
-    socket?.emit("code-change", {
-      fileName: newFile.name,
-      content: newFile.content,
-    });
     setActiveFileName(trimmedName);
     setNewFileName("");
     setIsCreatingFile(false);
+    if (roomReady) {
+      socket?.emit("code-change", {
+        fileName: newFile.name,
+        content: newFile.content,
+        language: newFile.language,
+      });
+    }
   };
 
   const handleDeleteFile = (fileName, event) => {
@@ -344,28 +416,38 @@ export default function WorkspaceView() {
     }
 
     const filteredFiles = files.filter((file) => file.name !== fileName);
-
+    removeEditorDocument(fileName);
     setFiles(filteredFiles);
-    if (!roomReady) return;
-
-    socket?.emit("file-delete", { fileName });
-
     if (activeFileName === fileName) {
       setActiveFileName(filteredFiles[0].name);
     }
+    if (roomReady) socket?.emit("file-delete", { fileName });
   };
 
   const handleRunCode = async () => {
+    if (!activeFile) return;
     setIsRunning(true);
-    setOutput(`[Compiling ${activeFile.name}...]`);
-    const result = await executeCode(
-      activeFile.content,
-      activeFile.language,
-      user?.token,
-      activeFile.name
-    );
-    setOutput(`${result.success ? "[Compilation successful]" : "[Compilation failed]"}\n${result.output}`);
-    setIsRunning(false);
+    setOutput(`[Running ${activeFile.name} in an isolated container...]`);
+    try {
+      const result = await executeCode(
+        activeFile.content,
+        activeFile.language,
+        user?.token,
+        activeFile.name,
+        stdin
+      );
+      setOutput(formatExecutionResult(result));
+      if (roomReady) {
+        socket?.emit("code-result", {
+          fileName: activeFile.name,
+          result,
+        });
+      }
+    } catch (error) {
+      setOutput(`Execution failed: ${error.message}`);
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   const handleSendMessage = () => {
@@ -404,6 +486,16 @@ export default function WorkspaceView() {
     }, 2000);
   };
 
+  const connectionLabel = connectionStatus === "connected"
+    ? (roomReady ? "Connected" : "Joining room...")
+    : connectionStatus === "reconnecting"
+      ? "Reconnecting..."
+      : connectionStatus === "connecting"
+        ? "Connecting..."
+        : connectionStatus === "error"
+          ? "Connection error"
+          : "Disconnected";
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090a0f] pt-14 font-sans text-[#f1f5f9]">
       <AppTopBar />
@@ -433,9 +525,17 @@ export default function WorkspaceView() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-[#94a3b8]">
-          <span className="h-2 w-2 rounded-full bg-[#10b981]" />
-          Connected
+        <div className="flex items-center gap-2 text-xs text-[#94a3b8]" role="status" aria-live="polite">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              connectionStatus === "connected"
+                ? "bg-[#10b981]"
+                : connectionStatus === "reconnecting" || connectionStatus === "connecting"
+                  ? "bg-amber-400"
+                  : "bg-red-400"
+            }`}
+          />
+          {connectionLabel}
         </div>
 
         <div className="flex items-center gap-3">
@@ -455,6 +555,22 @@ export default function WorkspaceView() {
           </button>
         </div>
       </header>
+
+      {collaborationError && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-red-400/20 bg-red-400/10 px-4 py-2 text-xs text-red-200"
+        >
+          <span>{collaborationError}</span>
+          <button
+            type="button"
+            onClick={() => setCollaborationError("")}
+            className="shrink-0 font-semibold text-red-100 hover:text-white"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main Content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -620,15 +736,19 @@ export default function WorkspaceView() {
                   height="100%"
                   theme="vs-dark"
                   language={activeFile.language}
-                  value={activeFile.content}
-                  onChange={handleCodeChange}
+                  path={activeFile.name}
+                  defaultValue={activeFile.content}
+                  onMount={setEditorInstance}
                   options={{
                     fontSize: 14,
-                    readOnly: false,
-                    domReadOnly: false,
+                    readOnly: !roomReady,
+                    domReadOnly: !roomReady,
                     contextmenu: true,
                     acceptSuggestionOnCommitCharacter: true,
                     quickSuggestions: true,
+                    autoIndent: "full",
+                    detectIndentation: true,
+                    formatOnPaste: true,
                     tabCompletion: "on",
                     wordBasedSuggestions: "currentDocument",
                     unicodeHighlight: {
@@ -651,11 +771,11 @@ export default function WorkspaceView() {
             </div>
 
             {/* Terminal */}
-            <div className="flex h-44 shrink-0 flex-col border-t border-[#2a2f40] bg-[#12151e]">
+            <div className="flex h-56 shrink-0 flex-col border-t border-[#2a2f40] bg-[#12151e]">
               <div className="flex shrink-0 items-center justify-between border-b border-[#2a2f40] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748b]">
                 <div className="flex items-center gap-2">
                   <Terminal className="h-3.5 w-3.5 text-[#3b82f6]" />
-                  <span>Output / Terminal</span>
+                  <span>Program Output</span>
                 </div>
 
                 <button
@@ -666,6 +786,17 @@ export default function WorkspaceView() {
                 </button>
               </div>
 
+              <label className="flex h-16 shrink-0 flex-col gap-1 border-b border-[#2a2f40] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">
+                stdin
+                <textarea
+                  value={stdin}
+                  onChange={(event) => setStdin(event.target.value)}
+                  maxLength={64000}
+                  placeholder="Optional input passed to the program"
+                  className="min-h-0 flex-1 resize-none rounded border border-[#2a2f40] bg-[#090a0f] px-2 py-1 font-mono text-xs font-normal normal-case tracking-normal text-[#cbd5e1] outline-none focus:border-[#3b82f6]"
+                />
+              </label>
+
               <div className="flex-1 space-y-1 overflow-y-auto bg-[#090a0f]/50 p-3 font-mono text-xs">
                 {output ? (
                   <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-[#94a3b8]">
@@ -673,7 +804,7 @@ export default function WorkspaceView() {
                   </pre>
                 ) : (
                   <span className="italic text-[#64748b]">
-                    Click "Run Code" to view output...
+                    Run a program to view stdout, stderr, and its exit status...
                   </span>
                 )}
               </div>
