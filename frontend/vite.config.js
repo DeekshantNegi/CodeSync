@@ -30,6 +30,12 @@ export default defineConfig({
           })
         },
       },
+      '/audio': {
+        target: 'http://127.0.0.1:8090',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/audio/, ''),
+      },
     },
   },
   plugins: [

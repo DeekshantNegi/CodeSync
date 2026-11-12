@@ -64,6 +64,7 @@ export function useYjs({
       socket.emit('editor-update', {
         fileName,
         update: encodeUpdate(update),
+        content: yText.toString(),
       });
     };
 

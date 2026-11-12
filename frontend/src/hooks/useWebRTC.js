@@ -77,6 +77,10 @@ export function useWebRTC(
         });
       });
 
+      peer.on("connect", () => {
+        setError("");
+        setStatus("connected");
+      });
       peer.on("close", () => removePeer(peerId));
       peer.on("error", (peerError) => {
         setError(`Voice connection failed: ${peerError.message || "the peer could not be reached."}`);
@@ -161,7 +165,17 @@ export function useWebRTC(
 
     const startVoice = async () => {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setError("This browser does not support microphone access.");
+        const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+        setError(isLocalHost
+          ? "This browser does not support microphone access."
+          : "Room audio requires a secure HTTPS connection. Use localhost for local testing.");
+        setStatus("error");
+        return;
+      }
+
+      const turnUrls = import.meta.env.VITE_TURN_URL;
+      if (turnUrls && (!import.meta.env.VITE_TURN_USERNAME || !import.meta.env.VITE_TURN_CREDENTIAL)) {
+        setError("TURN is configured without credentials. Set VITE_TURN_USERNAME and VITE_TURN_CREDENTIAL.");
         setStatus("error");
         return;
       }

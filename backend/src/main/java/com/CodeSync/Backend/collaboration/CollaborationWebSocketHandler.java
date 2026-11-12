@@ -65,6 +65,7 @@ public class CollaborationWebSocketHandler extends TextWebSocketHandler {
                         displayName,
                         claims.getSubject(),
                         persistedRoom.getHostUserId(),
+                        persistedRoom.getCollaborationState(),
                         session
                 );
             } catch (ResponseStatusException exception) {

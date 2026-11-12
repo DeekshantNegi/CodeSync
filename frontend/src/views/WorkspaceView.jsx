@@ -13,17 +13,19 @@ import {
   X,
   UserPlus,
   UserMinus,
-  Mic,
-  MicOff,
   Terminal,
   Check,
   Pencil,
   Code,
+  Mic,
+  MicOff,
+  LoaderCircle,
+  Volume2,
 } from "lucide-react";
 
 import Whiteboard from "../components/whiteboard/whiteboard";
-import VoiceBar from "../components/collaboration/VoiceBar";
 import { useSocketContext } from "../contexts/SocketContext";
+import { useLiveKitAudio } from "../hooks/useLiveKitAudio";
 import { useYjs } from "../hooks/useYjs";
 import { useAuth } from "../contexts/AuthContext";
 import { executeCode } from "../services/api";
@@ -73,15 +75,6 @@ function formatExecutionResult(result, author) {
   return lines.join("\n");
 }
 
-function initialFileContent(fileName, language) {
-  if (language === "python") return `# New file: ${fileName}\n`;
-  if (language === "html") return `<!-- New file: ${fileName} -->\n`;
-  if (language === "json") return "{}\n";
-  if (["css", "scss"].includes(language)) return `/* New file: ${fileName} */\n`;
-  if (language === "plaintext") return "";
-  return `// New file: ${fileName}\n`;
-}
-
 export default function WorkspaceView() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -89,7 +82,7 @@ export default function WorkspaceView() {
   const { socket, connectionStatus } = useSocketContext();
   const { user } = useAuth();
 
-  const displayName = location.state?.displayName || "Developer";
+  const displayName = location.state?.displayName || user?.displayName || "Guest";
 
   useEffect(() => {
     if (!user?.token || !roomId) return;
@@ -108,7 +101,7 @@ export default function WorkspaceView() {
   const [participants, setParticipants] = useState([]);
   const [hostId, setHostId] = useState(null);
   const [roomReady, setRoomReady] = useState(false);
-  const [participantMutes, setParticipantMutes] = useState({});
+  const isHost = roomReady && Boolean(socket?.id) && hostId === socket.id;
 
   const [inputMsg, setInputMsg] = useState("");
   const [messages, setMessages] = useState([]);
@@ -125,27 +118,14 @@ export default function WorkspaceView() {
   const [copied, setCopied] = useState(false);
 
   // Files
-  const [files, setFiles] = useState([
-    {
-      name: "main.py",
-      language: "python",
-      content:
-        '# Python Workspace\n\ndef main():\n    print("Hello from CodeSync!")\n\nif __name__ == "__main__":\n    main()\n',
-    },
-    {
-      name: "App.java",
-      language: "java",
-      content:
-        '// Java Workspace\npublic class App {\n    public static void main(String[] args) {\n        System.out.println("Hello from CodeSync!");\n    }\n}\n',
-    },
-  ]);
-
-  const [activeFileName, setActiveFileName] = useState("main.py");
-  const filesRef = useRef(files);
-
-  useEffect(() => {
-    filesRef.current = files;
-  }, [files]);
+  const [files, setFiles] = useState([]);
+  const [activeFileName, setActiveFileName] = useState("");
+  const audio = useLiveKitAudio({
+    roomId,
+    displayName,
+    token: user?.token,
+    roomReady,
+  });
 
   const activeFile =
     files.find((file) => file.name === activeFileName) || files[0];
@@ -155,6 +135,13 @@ export default function WorkspaceView() {
   useEffect(() => {
     activeFileNameRef.current = activeFileName;
   }, [activeFileName]);
+
+  useEffect(() => {
+    editorInstance?.updateOptions({
+      readOnly: !isHost,
+      domReadOnly: !isHost,
+    });
+  }, [editorInstance, isHost]);
 
   const handleCollaborativeContent = useCallback((fileName, content) => {
     setFiles((currentFiles) =>
@@ -197,41 +184,20 @@ export default function WorkspaceView() {
       setParticipants(nextParticipants || []);
       setHostId(nextHostId || null);
       setMessages(nextMessages || []);
-      setParticipantMutes(
-        Object.fromEntries(
-          (nextParticipants || []).map((participant) => [
-            participant.id,
-            participant.id !== nextHostId,
-          ])
-        )
-      );
 
-      if (nextFiles && Object.keys(nextFiles).length > 0) {
-        setFiles((currentFiles) =>
-          Object.entries(nextFiles).map(([name, content]) => {
-            const current = currentFiles.find((file) => file.name === name);
-            return {
-              name,
-              language: content?.language || current?.language || detectLanguage(name),
-              content: content?.content ?? content ?? "",
-            };
-          })
-        );
-      }
+      const restoredFiles = nextFiles || {};
+      const fileNames = Object.keys(restoredFiles);
+      setFiles(Object.entries(restoredFiles).map(([name, content]) => ({
+        name,
+        language: content?.language || detectLanguage(name),
+        content: content?.content ?? content ?? "",
+      })));
+      setActiveFileName((currentName) => fileNames.includes(currentName) ? currentName : fileNames[0] || "");
 
       if (codeResult?.result) {
         setOutput(formatExecutionResult(codeResult.result, codeResult.displayName));
       }
 
-      if (nextHostId === participantId && Object.keys(nextFiles || {}).length === 0) {
-        filesRef.current.forEach((file) => {
-          socket.emit("code-change", {
-            fileName: file.name,
-            content: file.content,
-            language: file.language,
-          });
-        });
-      }
     };
 
     const handleRoomJoined = () => {
@@ -292,21 +258,12 @@ export default function WorkspaceView() {
           { id: participantId, name: joinedName, isHost },
         ];
       });
-      setParticipantMutes((currentMutes) => ({
-        ...currentMutes,
-        [participantId]: !isHost,
-      }));
     };
 
     const handleParticipantLeft = ({ participantId }) => {
       setParticipants((currentParticipants) =>
         currentParticipants.filter((participant) => participant.id !== participantId)
       );
-      setParticipantMutes((currentMutes) => {
-        const nextMutes = { ...currentMutes };
-        delete nextMutes[participantId];
-        return nextMutes;
-      });
     };
 
     const handleHostChanged = ({ participantId }) => setHostId(participantId);
@@ -376,6 +333,7 @@ export default function WorkspaceView() {
   };
 
   const handleCreateFile = () => {
+    if (!isHost) return;
     const trimmedName = newFileName.trim();
 
     if (!trimmedName) {
@@ -391,7 +349,7 @@ export default function WorkspaceView() {
     const newFile = {
       name: trimmedName,
       language: detectLanguage(trimmedName),
-      content: initialFileContent(trimmedName, detectLanguage(trimmedName)),
+      content: "",
     };
 
     setFiles((previousFiles) => [...previousFiles, newFile]);
@@ -409,6 +367,7 @@ export default function WorkspaceView() {
 
   const handleDeleteFile = (fileName, event) => {
     event.stopPropagation();
+    if (!isHost) return;
 
     if (files.length === 1) {
       alert("Cannot delete the last remaining file in the workspace.");
@@ -464,17 +423,6 @@ export default function WorkspaceView() {
     });
 
     setInputMsg("");
-  };
-
-  const handleParticipantMute = (participantId) => {
-    const muted = participantMutes[participantId] !== false;
-    if (!roomReady) return;
-
-    socket?.emit("audio-control", { participantId, muted: !muted });
-    setParticipantMutes((currentMutes) => ({
-      ...currentMutes,
-      [participantId]: !muted,
-    }));
   };
 
   const copyRoomLink = () => {
@@ -539,6 +487,37 @@ export default function WorkspaceView() {
         </div>
 
         <div className="flex items-center gap-3">
+          {audio.isHost && (
+            <button
+              type="button"
+              onClick={() => audio.setHostBroadcasting(!audio.broadcasting)}
+              disabled={!audio.connected}
+              title={audio.broadcasting ? "Stop broadcasting your microphone" : "Start broadcasting your microphone"}
+              aria-label={audio.broadcasting ? "Stop broadcasting" : "Start broadcasting"}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                audio.broadcasting
+                  ? "bg-red-400/15 text-red-200 hover:bg-red-400/25"
+                  : "border border-[#2a2f40] bg-[#1e2330] text-[#cbd5e1] hover:bg-[#262c3d]"
+              }`}
+            >
+              {audio.connecting
+                ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                : audio.broadcasting
+                  ? <MicOff className="h-3.5 w-3.5" />
+                  : <Mic className="h-3.5 w-3.5" />}
+              {audio.broadcasting ? "Stop broadcast" : "Broadcast"}
+            </button>
+          )}
+          {audio.playbackBlocked && (
+            <button
+              type="button"
+              onClick={audio.resumePlayback}
+              className="flex items-center gap-1.5 rounded bg-amber-400/15 px-2.5 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-400/25"
+            >
+              <Volume2 className="h-3.5 w-3.5" />
+              Enable audio
+            </button>
+          )}
           <button
             onClick={() => setShowInviteModal(true)}
             className="flex items-center gap-1.5 rounded bg-[#3b82f6] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#2563eb]"
@@ -572,6 +551,15 @@ export default function WorkspaceView() {
         </div>
       )}
 
+      {audio.error && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center border-b border-amber-400/20 bg-amber-400/10 px-4 py-2 text-xs text-amber-100"
+        >
+          {audio.error}
+        </div>
+      )}
+
       {/* Main Content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* File Explorer */}
@@ -581,6 +569,7 @@ export default function WorkspaceView() {
 
             <button
               onClick={() => setIsCreatingFile(true)}
+              disabled={!isHost || !roomReady}
               className="text-[#94a3b8] transition-colors hover:text-[#f1f5f9]"
               title="Create File"
             >
@@ -637,15 +626,15 @@ export default function WorkspaceView() {
                   <span className="truncate">{file.name}</span>
                 </div>
 
-                <button
-                  onClick={(event) =>
-                    handleDeleteFile(file.name, event)
-                  }
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
-                  title="Delete File"
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-[#64748b] hover:text-[#ef4444]" />
-                </button>
+                {isHost && (
+                  <button
+                    onClick={(event) => handleDeleteFile(file.name, event)}
+                    className="opacity-0 transition-opacity group-hover:opacity-100"
+                    title="Delete File"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-[#64748b] hover:text-[#ef4444]" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -662,7 +651,7 @@ export default function WorkspaceView() {
 
               <span className="hidden text-[11px] text-[#64748b] sm:inline">
                 {activeWorkspace === "code"
-                  ? "Collaborative coding environment"
+                  ? isHost ? "Host controls the shared editor" : "Read-only shared editor"
                   : "Interactive visual workspace"}
               </span>
             </div>
@@ -721,7 +710,7 @@ export default function WorkspaceView() {
 
               <button
                 onClick={handleRunCode}
-                disabled={isRunning}
+                disabled={!activeFile || isRunning}
                 className="my-1 flex shrink-0 items-center gap-1.5 rounded bg-[#3b82f6] px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-[#2563eb] disabled:opacity-50"
               >
                 <Play className="h-3 w-3 fill-current" />
@@ -731,7 +720,7 @@ export default function WorkspaceView() {
 
             {/* Monaco Editor */}
             <div className="relative min-h-0 flex-1">
-              {activeFile && (
+              {activeFile ? (
                 <Editor
                   height="100%"
                   theme="vs-dark"
@@ -741,8 +730,8 @@ export default function WorkspaceView() {
                   onMount={setEditorInstance}
                   options={{
                     fontSize: 14,
-                    readOnly: !roomReady,
-                    domReadOnly: !roomReady,
+                    readOnly: !isHost,
+                    domReadOnly: !isHost,
                     contextmenu: true,
                     acceptSuggestionOnCommitCharacter: true,
                     quickSuggestions: true,
@@ -767,6 +756,12 @@ export default function WorkspaceView() {
                       "Fira Code, Consolas, Monaco, 'Courier New', monospace",
                   }}
                 />
+              ) : (
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[#64748b]">
+                  {roomReady
+                    ? isHost ? "Create a file to start coding." : "The host has not created a file yet."
+                    : "Connecting to the room..."}
+                </div>
               )}
             </div>
 
@@ -817,19 +812,12 @@ export default function WorkspaceView() {
               activeWorkspace === "whiteboard" ? "block" : "hidden"
             }`}
           >
-            <Whiteboard roomId={roomId} socket={socket} roomReady={roomReady} />
+            <Whiteboard roomId={roomId} socket={socket} roomReady={roomReady} isHost={isHost} />
           </div>
         </main>
 
         {/* Chat Sidebar */}
         <aside className="flex w-72 shrink-0 flex-col border-l border-[#2a2f40] bg-[#12151e]">
-          <VoiceBar
-            roomId={roomId}
-            socket={socket}
-            isHost={hostId === socket?.id}
-            roomReady={roomReady}
-          />
-
           {participants.length > 0 && (
             <div className="border-b border-[#2a2f40] p-3">
               <div className="mb-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">
@@ -845,18 +833,6 @@ export default function WorkspaceView() {
                     </span>
                     {hostId === socket?.id && participant.id !== socket?.id && (
                       <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          title={participantMutes[participant.id] !== false ? "Unmute participant" : "Mute participant"}
-                          onClick={() => handleParticipantMute(participant.id)}
-                          className="rounded p-1 text-[#64748b] hover:bg-emerald-400/10 hover:text-emerald-300"
-                        >
-                          {participantMutes[participant.id] !== false ? (
-                            <MicOff className="h-3.5 w-3.5" />
-                          ) : (
-                            <Mic className="h-3.5 w-3.5" />
-                          )}
-                        </button>
                         <button
                           type="button"
                           title="Remove participant"

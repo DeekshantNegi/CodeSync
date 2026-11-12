@@ -43,6 +43,12 @@ public class RoomService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Room not found"));
     }
 
+    public void updateCollaborationState(String roomCode, String state) {
+        Room room = requireActive(roomCode);
+        room.updateCollaborationState(state);
+        roomRepository.save(room);
+    }
+
     private String generateCode() {
         StringBuilder code = new StringBuilder("SYNC-");
         for (int index = 0; index < 8; index++) {

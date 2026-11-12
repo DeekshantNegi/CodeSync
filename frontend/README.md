@@ -1,16 +1,24 @@
-# React + Vite
+# CodeSync frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+CodeSync is a real-time collaborative coding workspace with authentication, shared rooms, a Monaco editor, a whiteboard, chat, room audio, and containerized code execution.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Start PostgreSQL and the Spring Boot backend. Configure `DB_URL` (or `DB_HOST`, `DB_PORT`, `DB_NAME`), `DB_USERNAME`, `DB_PASSWORD`, and a private `JWT_SECRET` of at least 32 bytes.
+2. From this directory, install dependencies and start Vite:
 
-## React Compiler
+   ```powershell
+   npm install
+   npm run dev
+   ```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Vite proxies `/api` and `/ws` to the backend at `127.0.0.1:8080`, and `/audio` to the Node audio service at `127.0.0.1:8090`. Room audio also requires a configured LiveKit server; see [the collaboration runtime guide](../docs/collaboration-runtime.md). For remote browser testing, use HTTPS; browser microphone access is not available on arbitrary insecure origins.
 
-## Expanding the Oxlint configuration
+## Build and lint
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```powershell
+npm run build
+npm run lint
+```
+
+See [the collaboration runtime guide](../docs/collaboration-runtime.md) for deployment, audio/TURN configuration, and code-execution requirements.

@@ -14,7 +14,6 @@ import AuthView from "./views/AuthView";
 import AppTopBar from "./components/layout/AppTopBar";
 
 import { SocketProvider } from "./contexts/SocketContext";
-import { RoomProvider } from "./contexts/RoomContext";
 import { AuthProvider } from "./contexts/AuthContext";
 import { useAuth } from "./contexts/AuthContext";
 
@@ -34,46 +33,16 @@ export default function App() {
 
       <AuthProvider>
       <SocketProvider>
-
-        <RoomProvider>
-
-          <div className="h-screen w-screen bg-[#090a0f] text-[#f1f5f9] overflow-hidden">
-
-            <Routes>
-
-              {/* Entry Lobby */}
-              <Route path="/" element={<AppShell><LobbyView /></AppShell>} />
-              <Route path="/auth" element={<AuthView />} />
-
-              {/* Workspace */}
-              <Route
-                path="/room/:roomId"
-                element={<RequireAuth><WorkspaceView /></RequireAuth>}
-              />
-
-              {/* History */}
-              <Route
-                path="/history"
-                element={<RequireAuth><AppShell><HistoryView /></AppShell></RequireAuth>}
-              />
-
-              {/* Profile */}
-              <Route
-                path="/profile"
-                element={<RequireAuth><AppShell><ProfileView /></AppShell></RequireAuth>}
-              />
-
-              {/* Unknown Route */}
-              <Route
-                path="*"
-                element={<Navigate to="/" replace />}
-              />
-
-            </Routes>
-
-          </div>
-
-        </RoomProvider>
+        <div className="h-screen w-screen bg-[#090a0f] text-[#f1f5f9] overflow-hidden">
+          <Routes>
+            <Route path="/" element={<AppShell><LobbyView /></AppShell>} />
+            <Route path="/auth" element={<AuthView />} />
+            <Route path="/room/:roomId" element={<RequireAuth><WorkspaceView /></RequireAuth>} />
+            <Route path="/history" element={<RequireAuth><AppShell><HistoryView /></AppShell></RequireAuth>} />
+            <Route path="/profile" element={<RequireAuth><AppShell><ProfileView /></AppShell></RequireAuth>} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
 
       </SocketProvider>
       </AuthProvider>

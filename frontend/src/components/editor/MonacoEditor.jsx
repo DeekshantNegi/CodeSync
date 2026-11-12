@@ -21,13 +21,6 @@ export default function MonacoEditor({ activeFile, code, onChange }) {
           lineNumbersMinChars: 3
         }}
       />
-      {/* Remote Peer Cursor Marker Overlay */}
-      <div className="absolute top-12 left-64 pointer-events-none flex flex-col items-start">
-        <div className="w-[2px] h-5 bg-[#14b8a6]"></div>
-        <span className="bg-[#14b8a6] text-black font-semibold text-[10px] px-1 rounded-sm -mt-6">
-          Sarah
-        </span>
-      </div>
     </div>
   );
 }

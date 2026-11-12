@@ -34,6 +34,9 @@ public class Room {
     @Column(nullable = false)
     private LocalDateTime lastActiveAt;
 
+    @Column(columnDefinition = "text")
+    private String collaborationState;
+
     protected Room() {
     }
 
@@ -51,8 +54,14 @@ public class Room {
     public RoomStatus getStatus() { return status; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getLastActiveAt() { return lastActiveAt; }
+    public String getCollaborationState() { return collaborationState; }
 
     public void touch() {
+        this.lastActiveAt = LocalDateTime.now();
+    }
+
+    public void updateCollaborationState(String collaborationState) {
+        this.collaborationState = collaborationState;
         this.lastActiveAt = LocalDateTime.now();
     }
 }

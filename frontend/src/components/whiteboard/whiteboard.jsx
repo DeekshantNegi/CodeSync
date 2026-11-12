@@ -3,7 +3,7 @@ import { Download, Pencil, Trash2 } from "lucide-react";
 import { Tldraw } from "tldraw";
 import "tldraw/tldraw.css";
 
-export default function Whiteboard({ roomId, socket, roomReady = false }) {
+export default function Whiteboard({ roomId, socket, roomReady = false, isHost = false }) {
   const editorRef = useRef(null);
   const applyingRemoteUpdateRef = useRef(false);
   const pendingPutRef = useRef(new Map());
@@ -105,6 +105,7 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
   }, [editor, roomId, roomReady, socket]);
 
   const clearWhiteboard = () => {
+    if (!isHost) return;
     const editor = editorRef.current;
 
     if (!editor) return;
@@ -175,7 +176,7 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
           <button
             type="button"
             onClick={clearWhiteboard}
-            disabled={!roomReady}
+            disabled={!roomReady || !isHost}
             className="flex items-center gap-1.5 rounded-lg border border-[#343946] bg-[#1a1e28] px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -196,10 +197,16 @@ export default function Whiteboard({ roomId, socket, roomReady = false }) {
 
       {/* Whiteboard Area */}
       <div className={`relative min-h-0 flex-1 overflow-hidden bg-[#e9edf2] [&_.tl-container]:!font-sans ${
-        roomReady ? "" : "pointer-events-none opacity-70"
-      }`}>
+        roomReady && isHost ? "" : "pointer-events-none opacity-70"
+      }`} inert={!isHost}>
+        {!isHost && roomReady && (
+          <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-md bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-slate-100">
+            Only the host can edit the whiteboard.
+          </div>
+        )}
         <Tldraw
           inferDarkMode={false}
+          autoFocus={false}
           onMount={(editor) => {
             editorRef.current = editor;
             setEditor(editor);
